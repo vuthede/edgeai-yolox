@@ -198,14 +198,16 @@ class YOLOXHeadKPTS(nn.Module):
             kpts_x = x
 
             cls_feat = cls_conv(cls_x)
-            cls_output = self.cls_preds[k](cls_feat)
+            cls_output = self.cls_preds[k](cls_feat)  # e.g Bxn_classx80x80 
 
             reg_feat = reg_conv(reg_x)
-            reg_output = self.reg_preds[k](reg_feat)
-            obj_output = self.obj_preds[k](reg_feat)
+            reg_output = self.reg_preds[k](reg_feat) # e.g Bx4x80x80. Bbox
+            obj_output = self.obj_preds[k](reg_feat) # e.g Bx1x80x80 . Score object
 
             kpts_feat = kpts_conv(kpts_x)
-            kpts_output = self.kpts_preds[k](kpts_feat)
+            kpts_output = self.kpts_preds[k](kpts_feat) # e.g Bx51x80x80. 17 key points
+            
+            # import pdb; pdb.set_trace();
 
             if self.training:
                 output = torch.cat([reg_output, obj_output, cls_output, kpts_output], 1)
@@ -243,6 +245,7 @@ class YOLOXHeadKPTS(nn.Module):
                 output = torch.cat(
                     [reg_output, obj_output, cls_output, kpts_output], 1
                 )
+                # devunote: The indice is 4:6 because the output is [x, y, w, h, obj, cls, kpts]. And cls here seems to be 1-size because there is only human class has keypoints
                 output[:,4:6,:,:] = torch.sigmoid(output[:,4:6,:,:])
 
             outputs.append(output)
@@ -775,3 +778,13 @@ class YOLOXHeadKPTS(nn.Module):
 
         return lkpt, lkptv
 
+if __name__ == "__main__":
+    head = YOLOXHeadKPTS(80, default_sigmas=True)
+    head.initialize_biases(0.1)
+    head.eval()
+    
+    x = torch.randn(2, 256, 80, 80)
+    labels = torch.randn(2, 50, 6)
+    imgs = torch.randn(2, 3, 640, 640)
+    head([x], labels, imgs)
+    print("Success")

@@ -60,6 +60,8 @@ class COCOKPTSDataset(Dataset):
         self.flip_index = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15] if default_flip_index else [i for i in range(num_kpts)]
         if cache:
             self._cache_images()
+        
+        # import pdb; pdb.set_trace()
 
     def __len__(self):
         return len(self.annotations)
@@ -130,7 +132,7 @@ class COCOKPTSDataset(Dataset):
             y1 = np.max((0, obj["bbox"][1]))
             x2 = np.min((width, x1 + np.max((0, obj["bbox"][2]))))
             y2 = np.min((height, y1 + np.max((0, obj["bbox"][3]))))
-            if obj["area"] > 0 and x2 >= x1 and y2 >= y1 and obj['num_keypoints']>0:
+            if obj["area"] > 0 and x2 >= x1 and y2 >= y1 and obj['num_keypoints']>0: #devu note: It only get the annotations with keypoints. So it will be human class.
                 obj["clean_bbox"] = [x1, y1, x2, y2]
                 # assert np.all(0 <= np.array(obj['keypoints'][0::3]))
                 # assert np.all(np.array(obj['keypoints'][0::3]) <= width)
@@ -230,3 +232,49 @@ class COCOKPTSDataset(Dataset):
         if self.preproc is not None:
             img, target = self.preproc(img, target, self.input_dim)
         return img, target, img_info, img_id
+
+
+if __name__ == "__main__":
+    from yolox.data import COCOKPTSDataset
+    import cv2
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    
+    dataset = COCOKPTSDataset(
+        data_dir="/home/vuthede/fiftyone/coco-2017/validation",
+        json_file="person_keypoints_val2017.json",
+        name="val2017",
+        img_size=(640, 640),
+    )
+
+
+    for i in range(100):
+        img, target, img_info, img_id = dataset[i]
+        
+        # target has shape n_objets x 5+2*num_kpts
+        # 5 is [x1, y1, x2, y2, class_id]
+        # All the coordination is on the original image size. If there is preproc, then the coordination is on the preproc image size, probably == img_size=(640, 640) due to padding
+        
+        # Now visualize the keypoints and the box around object
+        # The img now is hxwx3
+       
+        for i in range(target.shape[0]):
+            x1, y1, x2, y2 = target[i, :4]
+            x1 ,y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            class_id = target[i, 4]
+            kpts = target[i, 5:]
+            kpts = kpts.reshape(-1, 2)
+            kpts = kpts.astype(np.int32)
+            img = cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            print(f'Num kpts: {len(kpts)}')
+            for kpt in kpts:
+                img = cv2.circle(img, tuple(kpt), 2, (0, 255, 0), 2)
+
+
+        cv2.imshow("Imagekps",img)
+            
+        if cv2.waitKey(0) & 0xFF == ord('q'):
+            break
+        
+    cv2.destroyAllWindows()

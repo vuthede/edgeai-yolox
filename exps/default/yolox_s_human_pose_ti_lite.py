@@ -19,6 +19,10 @@ class Exp(MyExp):
         self.num_kpts = 17
         self.act = "relu"
         self.default_sigmas = True
+        
+        #### devu add override params
+        self.data_dir = "/home/vuthede/fiftyone/coco-2017/validation"
+        
 
         # -----------------  testing config ------------------ #
         self.human_pose = True
@@ -73,6 +77,7 @@ class Exp(MyExp):
                     json_file=self.train_ann,
                     num_kpts=self.num_kpts,
                     name=(self.img_folder_names[0] if self.img_folder_names else "train2017"),
+                    # name='val2017',
                     img_size=self.input_size,
                     preproc=TrainTransform(
                         max_labels=50,
