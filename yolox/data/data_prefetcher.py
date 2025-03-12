@@ -30,7 +30,14 @@ class DataPrefetcher:
 
         with torch.cuda.stream(self.stream):
             self.input_cuda()
-            self.next_target = self.next_target.cuda(non_blocking=True)
+            # Handle target dictionary with both 'target' and 'biometry' keys
+            if isinstance(self.next_target, dict):
+                if 'target' in self.next_target:
+                    self.next_target['target'] = self.next_target['target'].cuda(non_blocking=True)
+                if 'biometry' in self.next_target:
+                    self.next_target['biometry'] = self.next_target['biometry'].cuda(non_blocking=True)
+            else:
+                self.next_target = self.next_target.cuda(non_blocking=True)
 
     def next(self):
         torch.cuda.current_stream().wait_stream(self.stream)
@@ -40,7 +47,14 @@ class DataPrefetcher:
         if input is not None:
             self.record_stream(input)
         if target is not None:
-            target.record_stream(torch.cuda.current_stream())
+            # Handle recording stream for target dictionary
+            if isinstance(target, dict):
+                if 'target' in target:
+                    target['target'].record_stream(torch.cuda.current_stream())
+                if 'biometry' in target:
+                    target['biometry'].record_stream(torch.cuda.current_stream())
+            else:
+                target.record_stream(torch.cuda.current_stream())
         self.preload()
         return input, target, data_index
 
@@ -62,4 +76,3 @@ class DataPrefetcherCPU:
     def next(self):
         input, target, _, data_index = next(self.loader)
         return input, target, data_index
-

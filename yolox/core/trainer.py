@@ -30,6 +30,25 @@ from yolox.utils import (
     plots
 )
 
+def move_targets_to_device(targets, dtype=None, device=None):
+    """
+    Move all tensors inside a dictionary to a specified device and/or dtype.
+
+    Args:
+        targets (dict): Dictionary where each value is a tensor or None.
+        dtype (torch.dtype, optional): Target data type (e.g., torch.float32). Defaults to None (keep same).
+        device (torch.device, optional): Target device (e.g., 'cuda', 'cpu'). Defaults to None (keep same).
+
+    Returns:
+        dict: New dictionary with tensors moved to specified device/dtype.
+    """
+    new_targets = {}
+    for k, v in targets.items():
+        if isinstance(v, torch.Tensor):
+            v = v.to(dtype=dtype, device=device)  # Move to device and/or dtype
+        new_targets[k] = v  # Leave None or other types as-is
+    return new_targets
+
 
 class Trainer:
     def __init__(self, exp, args):
@@ -100,11 +119,16 @@ class Trainer:
 
     def train_one_iter(self):
         iter_start_time = time.time()
-
+        
+        # devu note : Now the targets is a dict contains keys like target and biometry
         inps, targets, data_index = self.prefetcher.next()
+        
         inps = inps.to(self.data_type)
-        targets = targets.to(self.data_type)
-        targets.requires_grad = False
+        # targets = targets.to(self.data_type)
+        targets = move_targets_to_device(targets, dtype=self.data_type, device=None)
+        targets['target'].requires_grad = False
+        targets['biometry'].requires_grad = False
+        
         inps, targets = self.exp.preprocess(inps, targets, self.input_size)
         data_end_time = time.time()
         if self.epoch < 2 and self.iter <100 and (self.args.task == "human_pose" or self.args.task == "object_pose") and self.exp.visualize:

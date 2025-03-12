@@ -139,6 +139,7 @@ class COCOKPTSDataset(Dataset):
                 # assert np.all(0 <= np.array(obj['keypoints'][1::3]))
                 # assert np.all(np.array(obj['keypoints'][1::3]) <= height)
                 obj["clean_kpts"] =  obj['keypoints']
+                
                 objs.append(obj)
         num_objs = len(objs)
         if num_objs==0:
@@ -164,13 +165,24 @@ class COCOKPTSDataset(Dataset):
         img_info = (height, width)
         resized_info = (int(height * r), int(width * r))
 
+        # Process biometry information such as weight, height, age
+        biometry = np.zeros((num_objs, 3), dtype=np.float32)  # (height, weight, age)
+
+        for ix, obj in enumerate(objs):
+            # Assuming obj contains these fields already preprocessed
+            biometry[ix, 0] = obj.get("height", -1.0)
+            biometry[ix, 1] = obj.get("weight", -1.0)
+            biometry[ix, 2] = obj.get("age", -1.0)
+
+
+
         file_name = (
             im_ann["file_name"]
             if "file_name" in im_ann
             else "{:012}".format(id_) + ".jpg"
         )
 
-        return (res, img_info, resized_info, file_name)
+        return (res, img_info, resized_info, file_name, biometry)
 
     def load_anno(self, index):
         return self.annotations[index][0]
@@ -198,14 +210,14 @@ class COCOKPTSDataset(Dataset):
     def pull_item(self, index):
         id_ = self.ids[index]
 
-        res, img_info, resized_info, _ = self.annotations[index]
+        res, img_info, resized_info, _, biometry = self.annotations[index]
         if self.imgs is not None:
             pad_img = self.imgs[index]
             img = pad_img[: resized_info[0], : resized_info[1], :].copy()
         else:
             img = self.load_resized_img(index)
 
-        return img, res.copy(), img_info, np.array([id_])
+        return img, res.copy(), img_info, np.array([id_]), biometry
 
     @Dataset.mosaic_getitem
     def __getitem__(self, index):
@@ -227,38 +239,31 @@ class COCOKPTSDataset(Dataset):
                 h, w (int): original shape of the image
             img_id (int): same as the input index. Used for evaluation.
         """
-        img, target, img_info, img_id = self.pull_item(index)
+        img, target, img_info, img_id, biometry = self.pull_item(index)
 
         if self.preproc is not None:
             img, target = self.preproc(img, target, self.input_dim)
+        target = dict(target=target, biometry=biometry)
         return img, target, img_info, img_id
 
 
-if __name__ == "__main__":
-    from yolox.data import COCOKPTSDataset
+def visualize_wo_transform():
+    from yolox.data import COCOKPTSDataset, MosaicDetection, TrainTransform
     import cv2
     import numpy as np
     import matplotlib.pyplot as plt
     
-    
     dataset = COCOKPTSDataset(
-        data_dir="/home/vuthede/fiftyone/coco-2017/validation",
-        json_file="person_keypoints_val2017.json",
-        name="val2017",
-        img_size=(640, 640),
+    data_dir="/home/vuthede/fiftyone/coco-2017/validation",
+    json_file="person_keypoints_val2017_with_random_bimometry.json",
+    name="val2017",
+    img_size=(640, 640),
     )
-
-
+    
     for i in range(100):
-        img, target, img_info, img_id = dataset[i]
-        
-        # target has shape n_objets x 5+2*num_kpts
-        # 5 is [x1, y1, x2, y2, class_id]
-        # All the coordination is on the original image size. If there is preproc, then the coordination is on the preproc image size, probably == img_size=(640, 640) due to padding
-        
-        # Now visualize the keypoints and the box around object
-        # The img now is hxwx3
-       
+        img, target_all, img_info, img_id = dataset[i]
+        target = target_all['target']
+        biometry = target_all['biometry']
         for i in range(target.shape[0]):
             x1, y1, x2, y2 = target[i, :4]
             x1 ,y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
@@ -270,11 +275,116 @@ if __name__ == "__main__":
             print(f'Num kpts: {len(kpts)}')
             for kpt in kpts:
                 img = cv2.circle(img, tuple(kpt), 2, (0, 255, 0), 2)
-
-
         cv2.imshow("Imagekps",img)
             
         if cv2.waitKey(0) & 0xFF == ord('q'):
             break
-        
     cv2.destroyAllWindows()
+    
+
+if __name__ == "__main__":
+    from yolox.data import COCOKPTSDataset, MosaicDetection, TrainTransform
+    import cv2
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    
+    dataset = COCOKPTSDataset(
+        data_dir="/home/vuthede/fiftyone/coco-2017/validation",
+        json_file="person_keypoints_val2017_with_random_bimometry.json",
+        name="val2017",
+        img_size=(640, 640),
+        preproc=TrainTransform(
+                max_labels=120,
+                flip_prob=0.5,
+                hsv_prob=0.5,
+                object_pose=False,
+                human_pose=True,
+                num_kpts=17,
+        ),
+    )
+    
+    dataset = MosaicDetection(
+            dataset,
+            mosaic=True,
+            img_size=(640, 640),
+            preproc=TrainTransform(
+                max_labels=120,
+                flip_prob=0.5,
+                hsv_prob=0.5,
+                object_pose=False,
+                human_pose=True,
+                flip_index=dataset.flip_index,
+                num_kpts=17,
+            ),
+            num_kpts=17,
+            degrees=0.0,
+            translate=0.0,
+            mosaic_scale=(0.4, 0.6),
+            mixup_scale=(0.5,1.5),
+            shear=0.0,
+            enable_mixup=False,
+            mosaic_prob=0.5,
+            mixup_prob=0.1,
+        )
+
+
+    for i in range(100):
+        img, target_all, img_info, img_id= dataset[i]
+        target = target_all['target']
+        biometry = target_all['biometry']
+        # Make sure img is in (H, W, C) format for visualization
+        img = img.transpose(1, 2, 0)  # (C, H, W) -> (H, W, C)
+        img = np.ascontiguousarray(img)
+        img = img.astype(np.uint8)
+        
+        # import pdb; pdb.set_trace()
+
+        h, w, _ = img.shape  # Image size
+
+        print(f'Biometry shape: {biometry.shape}. target shape :{target.shape}')
+        # # Loop through targets and draw boxes + keypoints
+        for j in range(target.shape[0]):
+            cx, cy, bw, bh = target[j, 1:5]  # Get center and size
+
+            # Convert (cx, cy, w, h) -> (x1, y1, x2, y2)
+            x1 = int(np.clip(cx - bw / 2, 0, w - 1))
+            y1 = int(np.clip(cy - bh / 2, 0, h - 1))
+            x2 = int(np.clip(cx + bw / 2, 0, w - 1))
+            y2 = int(np.clip(cy + bh / 2, 0, h - 1))
+
+            class_id = int(target[j, 0])
+
+            # Extract and reshape keypoints
+            kpts = target[j, 5:].reshape(-1, 2)
+
+            # If normalized kpts (optional):
+            # kpts[:, 0] *= w
+            # kpts[:, 1] *= h
+
+            # Clip keypoints to image boundaries
+            kpts[:, 0] = np.clip(kpts[:, 0], 0, w - 1)
+            kpts[:, 1] = np.clip(kpts[:, 1], 0, h - 1)
+            kpts = kpts.astype(np.int32)
+
+            # Draw bounding box
+            img = cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            print(f'Class ID: {class_id}, Num keypoints: {len(kpts)}')
+            
+            # Add biometry info using putTExt
+            cv2.putText(img, f'Height: {biometry[j, 0]}', (x1, y1-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(img, f'Weight: {biometry[j, 1]}', (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(img, f'Age: {biometry[j, 2]}', (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            
+
+            # Draw keypoints
+            for kpt in kpts:
+                if (kpt > 0).all():  # Optional: ignore invisible keypoints
+                    img = cv2.circle(img, tuple(kpt), 3, (0, 255, 0), -1)
+
+        cv2.imshow("Image with keypoints and boxes", img)
+        if cv2.waitKey(0) & 0xFF == ord('q'):
+            break
+
+        cv2.destroyAllWindows()

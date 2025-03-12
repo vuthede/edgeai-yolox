@@ -222,9 +222,8 @@ def preproc(img, input_size, swap=(2, 0, 1)):
     padded_img = np.ascontiguousarray(padded_img, dtype=np.float32)
     return padded_img, r
 
-
 class TrainTransform:
-    def __init__(self, max_labels=50, flip_prob=0.5, hsv_prob=1.0, object_pose = False, human_pose=False, flip_index=None, num_kpts=17):
+    def __init__(self, max_labels=50, flip_prob=0.5, hsv_prob=1.0, object_pose=False, human_pose=False, flip_index=None, num_kpts=17):
         self.max_labels = max_labels
         self.flip_prob = flip_prob
         self.hsv_prob = hsv_prob
@@ -233,13 +232,13 @@ class TrainTransform:
         self.flip_index = flip_index
         self.num_kpts = num_kpts
         if self.object_pose:
-            self.target_size = 14  #5 + 9
+            self.target_size = 14  # 5 + 9
         elif self.human_pose:
-            self.target_size = (5+2*self.num_kpts)  # 5+ 2*17
+            self.target_size = (5 + 2 * self.num_kpts)  # 5 + 2*17
         else:
             self.target_size = 5
 
-    def __call__(self, image, targets, input_dim):
+    def __call__(self, image, targets, input_dim, biometry):
         boxes = targets[:, :4].copy()
         labels = targets[:, 4].copy()
         if self.object_pose:
@@ -248,13 +247,20 @@ class TrainTransform:
             human_kpts = targets[:, 5:].copy()
         else:
             human_kpts = None
+        
+        # import pdb; pdb.set_trace();
+        # print(f"Boxes: {boxes.shape}")
         if len(boxes) == 0:
             targets = np.zeros((self.max_labels, self.target_size), dtype=np.float32)
             image, r_o = preproc(image, input_dim)
-            return image, targets
+            biometry = np.zeros((0, 3), dtype=np.float32)  # Return empty biometry if no objects
+            return image, targets, biometry
 
+        # Save original copy for fallback
         image_o = image.copy()
         targets_o = targets.copy()
+        biometry_o = biometry.copy()
+        # print(f"Boxes: {boxes.shape}. targets: {targets.shape}. biometry: {biometry.shape}")
         height_o, width_o, _ = image_o.shape
         boxes_o = targets_o[:, :4]
         labels_o = targets_o[:, 4]
@@ -262,46 +268,57 @@ class TrainTransform:
             object_poses_o = targets_o[:, 5:14]
         elif self.human_pose:
             human_kpts_o = targets_o[:, 5:]
-        # bbox_o: [xyxy] to [c_x,c_y,w,h]
+
         boxes_o = xyxy2cxcywh(boxes_o)
 
         if random.random() < self.hsv_prob:
             augment_hsv(image)
+
         if self.human_pose:
-            image_t, boxes, human_kpts = _mirror(image, boxes, self.flip_prob, human_pose=self.human_pose, object_pose=self.object_pose, human_kpts=human_kpts, flip_index=self.flip_index)
+            image_t, boxes, human_kpts = _mirror(
+                image, boxes, self.flip_prob,
+                human_pose=self.human_pose,
+                object_pose=self.object_pose,
+                human_kpts=human_kpts,
+                flip_index=self.flip_index
+            )
         elif self.object_pose:
-            image_t, boxes = image, boxes
+            image_t, boxes = image, boxes  # No flip for object pose here
         else:
             image_t, boxes = _mirror(image, boxes, self.flip_prob)
 
         height, width, _ = image_t.shape
         image_t, r_ = preproc(image_t, input_dim)
-        # boxes [xyxy] 2 [cx,cy,w,h]
         boxes = xyxy2cxcywh(boxes)
         boxes *= r_
         if self.human_pose:
             human_kpts *= r_
 
-
+        # ----------------- Filter small boxes -----------------
         mask_b = np.minimum(boxes[:, 2], boxes[:, 3]) > 1
         boxes_t = boxes[mask_b]
         labels_t = labels[mask_b]
+        biometry_t = biometry[mask_b]  # ✅ Filter biometry aligned with boxes!
+
         if self.object_pose:
             object_poses_t = object_poses[mask_b]
         elif self.human_pose:
             human_kpts_t = human_kpts[mask_b]
 
+        # ----------------- Fallback if empty after filtering -----------------
         if len(boxes_t) == 0:
             image_t, r_o = preproc(image_o, input_dim)
             boxes_o *= r_o
             boxes_t = boxes_o
             labels_t = labels_o
+            biometry_t = biometry_o  # Use original biometry if fallback
             if self.object_pose:
                 object_poses_t = object_poses_o
             elif self.human_pose:
                 human_kpts_t = human_kpts_o
                 human_kpts_t *= r_o
 
+        # ----------------- Prepare final target -----------------
         labels_t = np.expand_dims(labels_t, 1)
 
         if self.object_pose:
@@ -310,12 +327,22 @@ class TrainTransform:
             targets_t = np.hstack((labels_t, boxes_t, human_kpts_t))
         else:
             targets_t = np.hstack((labels_t, boxes_t))
-        padded_labels = np.zeros((self.max_labels, self.target_size))
-        padded_labels[range(len(targets_t))[: self.max_labels]] = targets_t[
-            : self.max_labels
-        ]
+
+        # ----------------- Padding -----------------
+        padded_labels = np.zeros((self.max_labels, self.target_size), dtype=np.float32)
+        padded_labels[range(len(targets_t))[: self.max_labels]] = targets_t[: self.max_labels]
         padded_labels = np.ascontiguousarray(padded_labels, dtype=np.float32)
-        return image_t, padded_labels
+        
+        # ----------------- Padding biometry -----------------
+        padded_biometry = np.zeros((self.max_labels, 3), dtype=np.float32)  # 3 for height, weight, age
+        num_biometry = min(len(biometry_t), self.max_labels)
+        padded_biometry[:num_biometry] = biometry_t[:num_biometry]
+        padded_biometry = np.ascontiguousarray(padded_biometry, dtype=np.float32)
+
+
+        # ----------------- Return aligned biometry -----------------
+        return image_t, padded_labels, padded_biometry
+
 
 
 class ValTransform:

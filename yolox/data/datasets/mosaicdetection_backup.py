@@ -86,31 +86,29 @@ class MosaicDetection(Dataset):
     def __getitem__(self, idx):
         if self.enable_mosaic and random.random() < self.mosaic_prob:
             mosaic_labels = []
-            mosaic_biometries = []
             input_dim = self._dataset.input_dim
             input_h, input_w = input_dim[0], input_dim[1]
 
+            # yc, xc = s, s  # mosaic center x, y
             yc = int(random.uniform(0.5 * input_h, 1.5 * input_h))
             xc = int(random.uniform(0.5 * input_w, 1.5 * input_w))
 
+            # 3 additional image indices
             indices = [idx] + [random.randint(0, len(self._dataset) - 1) for _ in range(3)]
 
             for i_mosaic, index in enumerate(indices):
-                img, _labels, _, img_id, _biometry = self._dataset.pull_item(index)
-                
-                # import pdb; pdb.set_trace();
-                # print(f"#############3 _labels: {_labels.shape}. _biometry: {_biometry.shape}")
-                
-                h0, w0 = img.shape[:2]
+                img, _labels, _, img_id = self._dataset.pull_item(index)
+                h0, w0 = img.shape[:2]  # orig hw
                 scale = min(1. * input_h / h0, 1. * input_w / w0)
                 img = cv2.resize(
                     img, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_LINEAR
                 )
-                h, w, c = img.shape[:3]
-
+                # generate output mosaic image
+                (h, w, c) = img.shape[:3]
                 if i_mosaic == 0:
                     mosaic_img = np.full((input_h * 2, input_w * 2, c), 114, dtype=np.uint8)
 
+                # suffix l means large image, while s means small image in mosaic aug.
                 (l_x1, l_y1, l_x2, l_y2), (s_x1, s_y1, s_x2, s_y2) = get_mosaic_coordinate(
                     mosaic_img, i_mosaic, xc, yc, w, h, input_h, input_w
                 )
@@ -119,26 +117,19 @@ class MosaicDetection(Dataset):
                 padw, padh = l_x1 - s_x1, l_y1 - s_y1
 
                 labels = _labels.copy()
-                biometry = _biometry.copy()
-
-                # Transform labels (boxes and keypoints)
+                # Normalized xywh to pixel xyxy format
                 if _labels.size > 0:
                     labels[:, 0] = scale * _labels[:, 0] + padw
                     labels[:, 1] = scale * _labels[:, 1] + padh
                     labels[:, 2] = scale * _labels[:, 2] + padw
                     labels[:, 3] = scale * _labels[:, 3] + padh
                     if self.preproc.human_pose:
-                        labels[:, 5::2][labels[:, 5::2] != 0] = scale * _labels[:, 5::2][labels[:, 5::2] != 0] + padw
-                        labels[:, 6::2][labels[:, 6::2] != 0] = scale * _labels[:, 6::2][labels[:, 6::2] != 0] + padh
-
+                        labels[:, 5::2][labels[:, 5::2]!=0] = scale * _labels[:, 5::2][labels[:, 5::2]!=0] + padw
+                        labels[:, 6::2][labels[:, 6::2]!=0] = scale * _labels[:, 6::2][labels[:, 6::2]!=0] + padh
                 mosaic_labels.append(labels)
-                mosaic_biometries.append(biometry)
 
-            # Handle mosaic combination
             if len(mosaic_labels):
                 mosaic_labels = np.concatenate(mosaic_labels, 0)
-                mosaic_biometries = np.concatenate(mosaic_biometries, 0) if len(mosaic_biometries) else np.zeros((0, 3))
-
                 np.clip(mosaic_labels[:, 0], 0, 2 * input_w, out=mosaic_labels[:, 0])
                 np.clip(mosaic_labels[:, 1], 0, 2 * input_h, out=mosaic_labels[:, 1])
                 np.clip(mosaic_labels[:, 2], 0, 2 * input_w, out=mosaic_labels[:, 2])
@@ -147,7 +138,6 @@ class MosaicDetection(Dataset):
                     np.clip(mosaic_labels[:, 5::2], 0, 2 * input_w, out=mosaic_labels[:, 5::2])
                     np.clip(mosaic_labels[:, 6::2], 0, 2 * input_h, out=mosaic_labels[:, 6::2])
 
-            # Apply affine and other transformations
             mosaic_img, mosaic_labels = random_affine(
                 mosaic_img,
                 mosaic_labels,
@@ -158,55 +148,70 @@ class MosaicDetection(Dataset):
                 shear=self.shear,
                 human_pose=self.preproc.human_pose,
                 num_kpts=self.num_kpts
-            )
+            )  # border to remove
 
-            # Apply same affine to biometry if necessary (if geometry-dependent — but normally biometry is not)
-            # If biometry is related to boxes and any of them are invalidated, you need to filter them accordingly (depends on random_affine logic)
-
-            # MixUp augmentation
+            # -----------------------------------------------------------------
+            # CopyPaste: https://arxiv.org/abs/2012.07177
+            # -----------------------------------------------------------------
             if (
                 self.enable_mixup
-                and len(mosaic_labels) != 0
+                and not len(mosaic_labels) == 0
                 and random.random() < self.mixup_prob
             ):
-                mosaic_img, mosaic_labels, mosaic_biometries = self.mixup(
-                    mosaic_img, mosaic_labels, mosaic_biometries, self.input_dim, human_pose=self.preproc.human_pose
-                )
-
-            # Final preprocessing
-            mix_img, padded_labels, mosaic_biometries = self.preproc(mosaic_img, mosaic_labels, self.input_dim, mosaic_biometries)
+                mosaic_img, mosaic_labels = self.mixup(mosaic_img, mosaic_labels, self.input_dim, human_pose=self.preproc.human_pose)
+            mix_img, padded_labels = self.preproc(mosaic_img, mosaic_labels, self.input_dim)
             img_info = (mix_img.shape[1], mix_img.shape[0])
 
-            # print(f"#############1 padded_labels: {padded_labels.shape}. biometry: {mosaic_biometries.shape}")
-            padded_labels = dict(target=padded_labels, biometry=mosaic_biometries)
-            
+            # -----------------------------------------------------------------
+            # img_info and img_id are not used for training.
+            # They are also hard to be specified on a mosaic image.
+            # -----------------------------------------------------------------
             return mix_img, padded_labels, img_info, img_id
 
         else:
             self._dataset._input_dim = self.input_dim
-            img, label, img_info, img_id, biometry = self._dataset.pull_item(idx)
-            # Standard processing for non-mosaic
-            img, label, biometry = self.preproc(img, label, self.input_dim, biometry)
-            # print(f"#############2 padded_labels: {padded_labels.shape}. biometry: {biometry.shape}")
-            
-            label = dict(target=label, biometry=biometry)
-            
+            img, label, img_info, img_id = self._dataset.pull_item(idx)
+            if isinstance(self._dataset, YCBVDataset):
+                img_index = list(self._dataset.imgs_coco)[img_id]
+                image_folder = self._dataset.imgs_coco[int(img_index)]['image_folder']
+                if int(image_folder)<60:
+                    camera_matrix = self._dataset.cad_models.camera_matrix['camera_uw']
+                else:
+                    camera_matrix = self._dataset.cad_models.camera_matrix['camera_cmu']
+            elif isinstance(self._dataset, LMODataset):
+                camera_matrix = self._dataset.cad_models.camera_matrix
+            else:
+                camera_matrix = None
+            if isinstance(self._dataset, (YCBVDataset, LMODataset)) and self.enable_mosaic:  # no aug training for 6d pose estimation.
+                img, label = random_affine(
+                    img,
+                    label,
+                    target_size=self.input_dim,
+                    degrees=self.degrees,
+                    translate=self.translate,
+                    scales=self.scale,
+                    shear=self.shear,
+                    human_pose=self.preproc.human_pose,
+                    object_pose= self.preproc.object_pose,
+                    camera_matrix=camera_matrix
+                )  # border to remove
+            #if self.preproc is not None: #Temporary fix
+            #    img, label = self.preproc(img, label, self.input_dim)
+            img, label = self.preproc(img, label, self.input_dim)
+            #if self._dataset.pose:
+            #    label = np
             return img, label, img_info, img_id
 
-
-    def mixup(self, origin_img, origin_labels, origin_biometry, input_dim, human_pose=False):
+    def mixup(self, origin_img, origin_labels, input_dim, human_pose=False):
         jit_factor = random.uniform(*self.mixup_scale)
         flip_prob = self.preproc.flip_prob if self.preproc else 0.0
         FLIP = random.uniform(0, 1) < flip_prob
-
         cp_labels = []
-        cp_biometry = []
         while len(cp_labels) == 0:
             cp_index = random.randint(0, self.__len__() - 1)
-            # Pull both labels and biometry now!
-            img, cp_labels, _, _, cp_biometry = self._dataset.pull_item(cp_index)
+            cp_labels = self._dataset.load_anno(cp_index)
+        img, cp_labels, _, _ = self._dataset.pull_item(cp_index)
 
-        # Prepare canvas for mixed image
         if len(img.shape) == 3:
             cp_img = np.ones((input_dim[0], input_dim[1], 3), dtype=np.uint8) * 114
         else:
@@ -219,7 +224,9 @@ class MosaicDetection(Dataset):
             interpolation=cv2.INTER_LINEAR,
         )
 
-        cp_img[: int(img.shape[0] * cp_scale_ratio), : int(img.shape[1] * cp_scale_ratio)] = resized_img
+        cp_img[
+            : int(img.shape[0] * cp_scale_ratio), : int(img.shape[1] * cp_scale_ratio)
+        ] = resized_img
 
         cp_img = cv2.resize(
             cp_img,
@@ -230,7 +237,6 @@ class MosaicDetection(Dataset):
         if FLIP:
             cp_img = cp_img[:, ::-1, :]
 
-        # Prepare for cropping to target image shape
         origin_h, origin_w = cp_img.shape[:2]
         target_h, target_w = origin_img.shape[:2]
         padded_img = np.zeros(
@@ -243,16 +249,17 @@ class MosaicDetection(Dataset):
             y_offset = random.randint(0, padded_img.shape[0] - target_h - 1)
         if padded_img.shape[1] > target_w:
             x_offset = random.randint(0, padded_img.shape[1] - target_w - 1)
+        padded_cropped_img = padded_img[
+            y_offset: y_offset + target_h, x_offset: x_offset + target_w
+        ]
 
-        padded_cropped_img = padded_img[y_offset: y_offset + target_h, x_offset: x_offset + target_w]
-
-        # ----------------- Label processing -----------------
         cp_bboxes_origin_np = adjust_box_anns(
             cp_labels[:, :4].copy(), cp_scale_ratio, 0, 0, origin_w, origin_h
         )
         if FLIP:
-            cp_bboxes_origin_np[:, 0::2] = origin_w - cp_bboxes_origin_np[:, 0::2][:, ::-1]
-
+            cp_bboxes_origin_np[:, 0::2] = (
+                origin_w - cp_bboxes_origin_np[:, 0::2][:, ::-1]
+            )
         cp_bboxes_transformed_np = cp_bboxes_origin_np.copy()
         cp_bboxes_transformed_np[:, 0::2] = np.clip(
             cp_bboxes_transformed_np[:, 0::2] - x_offset, 0, target_w
@@ -261,13 +268,12 @@ class MosaicDetection(Dataset):
             cp_bboxes_transformed_np[:, 1::2] - y_offset, 0, target_h
         )
 
-        # ----------------- Keypoint handling (optional) -----------------
         if human_pose:
             cp_kpt_origin_np = adjust_kpts_anns(
                 cp_labels[:, 5:].copy(), cp_scale_ratio, 0, 0, origin_w, origin_h
             )
             if FLIP:
-                cp_kpt_origin_np[:, 0::2] = (origin_w - cp_kpt_origin_np[:, 0::2]) * (cp_kpt_origin_np[:, 0::2] != 0)
+                cp_kpt_origin_np[:, 0::2] = (origin_w - cp_kpt_origin_np[:, 0::2])*(cp_kpt_origin_np[:, 0::2]!=0)
                 cp_kpt_origin_np[:, 0::2] = cp_kpt_origin_np[:, 0::2][:, self.preproc.flip_index]
                 cp_kpt_origin_np[:, 1::2] = cp_kpt_origin_np[:, 1::2][:, self.preproc.flip_index]
 
@@ -281,23 +287,13 @@ class MosaicDetection(Dataset):
 
         cls_labels = cp_labels[:, 4:5].copy()
         box_labels = cp_bboxes_transformed_np
-
         if not human_pose:
             labels = np.hstack((box_labels, cls_labels))
         else:
             kpt_label = cp_kpt_transformed_np.copy()
             labels = np.hstack((box_labels, cls_labels, kpt_label))
-
-        # ----------------- Handling biometry -----------------
-        # NOTE: If any bbox or label is filtered out in post-processing, you should also filter biometry correspondingly
-        # Here, we assume no filtering and direct concatenation
-        combined_labels = np.vstack((origin_labels, labels))
-        combined_biometry = np.vstack((origin_biometry, cp_biometry))
-
-        # ----------------- Image blending -----------------
+        origin_labels = np.vstack((origin_labels, labels))
         origin_img = origin_img.astype(np.float32)
-        padded_cropped_img = padded_cropped_img.astype(np.float32)
-        mixed_img = 0.5 * origin_img + 0.5 * padded_cropped_img
-        mixed_img = mixed_img.astype(np.uint8)
+        origin_img = 0.5 * origin_img + 0.5 * padded_cropped_img.astype(np.float32)
 
-        return mixed_img, combined_labels, combined_biometry
+        return origin_img.astype(np.uint8), origin_labels

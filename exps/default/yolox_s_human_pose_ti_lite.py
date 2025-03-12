@@ -28,7 +28,22 @@ class Exp(MyExp):
         self.human_pose = True
         self.visualize = False #True
         self.od_weights = None
-
+        
+    # override the default dataset
+    def preprocess(self, inputs, targets, tsize):
+        assert type(targets) == dict, f'''targets should be dict, got {type(targets)}'''
+        
+        scale_y = tsize[0] / self.input_size[0]
+        scale_x = tsize[1] / self.input_size[1]
+        if scale_x != 1 or scale_y != 1:
+            inputs = nn.functional.interpolate(
+                inputs, size=tsize, mode="bilinear", align_corners=False
+            )
+            targets['target'][..., 1::2] = targets['target'][..., 1::2] * scale_x
+            targets['target'][..., 2::2] = targets['target'][..., 2::2] * scale_y
+        return inputs, targets
+    
+    
     def get_model(self):
         from yolox.models import YOLOX, YOLOPAFPN, YOLOXHeadKPTS
 
@@ -76,8 +91,8 @@ class Exp(MyExp):
                     data_dir=self.data_dir,
                     json_file=self.train_ann,
                     num_kpts=self.num_kpts,
-                    name=(self.img_folder_names[0] if self.img_folder_names else "train2017"),
-                    # name='val2017',
+                    # name=(self.img_folder_names[0] if self.img_folder_names else "train2017"),
+                    name='val2017',
                     img_size=self.input_size,
                     preproc=TrainTransform(
                         max_labels=50,

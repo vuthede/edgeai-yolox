@@ -45,10 +45,17 @@ class YOLOXHeadKPTS(nn.Module):
         self.cls_convs = nn.ModuleList()
         self.reg_convs = nn.ModuleList()
         self.kpts_convs = nn.ModuleList()
+        self.biometry_convs = nn.ModuleList()
+        
         self.cls_preds = nn.ModuleList()
         self.reg_preds = nn.ModuleList()
         self.obj_preds = nn.ModuleList()
         self.kpts_preds = nn.ModuleList()
+        self.biometry_preds = nn.ModuleList()
+        
+        
+        
+        
         self.stems = nn.ModuleList()
         if default_sigmas is None:
             raise RuntimeError("default_sigmas must not be None")
@@ -126,6 +133,29 @@ class YOLOXHeadKPTS(nn.Module):
                     ]
                 )
             )
+            
+            self.biometry_convs.append(
+                nn.Sequential(
+                    *[
+                        Conv(
+                            in_channels=int(256 * width),
+                            out_channels=int(256 * width),
+                            ksize=3,
+                            stride=1,
+                            act=act,
+                        ),
+                        Conv(
+                            in_channels=int(256 * width),
+                            out_channels=int(256 * width),
+                            ksize=3,
+                            stride=1,
+                            act=act,
+                        ),
+                    ]
+                )
+            )
+            
+            
             self.cls_preds.append(
                 nn.Conv2d(
                     in_channels=int(256 * width),
@@ -162,6 +192,16 @@ class YOLOXHeadKPTS(nn.Module):
                     padding=0,
                 )
             )
+            
+            self.biometry_preds.append(
+                nn.Conv2d(
+                    in_channels=int(256 * width),
+                    out_channels=self.n_anchors * 3, # 3 for height, width, age
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                )
+            )
 
         self.use_l1 = False
         self.l1_loss = nn.L1Loss(reduction="none")
@@ -185,17 +225,19 @@ class YOLOXHeadKPTS(nn.Module):
         outputs = []
         origin_preds = []
         origin_kpts_preds = []
+        origin_biometry_preds = []
         x_shifts = []
         y_shifts = []
         expanded_strides = []
 
-        for k, (cls_conv, reg_conv, kpts_conv, stride_this_level, x) in enumerate(
-            zip(self.cls_convs, self.reg_convs, self.kpts_convs, self.strides, xin)
+        for k, (cls_conv, reg_conv, kpts_conv, biometry_conv, stride_this_level, x) in enumerate(
+            zip(self.cls_convs, self.reg_convs, self.kpts_convs, self.biometry_convs , self.strides, xin)
         ):
             x = self.stems[k](x)
             cls_x = x
             reg_x = x
             kpts_x = x
+            biometry_x = x
 
             cls_feat = cls_conv(cls_x)
             cls_output = self.cls_preds[k](cls_feat)  # e.g Bxn_classx80x80 
@@ -207,10 +249,13 @@ class YOLOXHeadKPTS(nn.Module):
             kpts_feat = kpts_conv(kpts_x)
             kpts_output = self.kpts_preds[k](kpts_feat) # e.g Bx51x80x80. 17 key points
             
+            biometry_feat = biometry_conv(biometry_x)
+            biometry_output = self.biometry_preds[k](biometry_feat) # e.g Bx3x80x80. 3 biometry features
+            
             # import pdb; pdb.set_trace();
 
             if self.training:
-                output = torch.cat([reg_output, obj_output, cls_output, kpts_output], 1)
+                output = torch.cat([reg_output, obj_output, cls_output, kpts_output, biometry_output], 1)
                 output, grid = self.get_output_and_grid(
                     output, k, stride_this_level, xin[0].type()
                 )
@@ -237,13 +282,23 @@ class YOLOXHeadKPTS(nn.Module):
                     kpts_output = kpts_output.permute(0, 1, 3, 4, 2).reshape(
                         batch_size, -1,  3*self.num_kpts
                     )
+                    
+                    biometry_output = biometry_output.view(
+                        batch_size, self.n_anchors, 3, hsize, wsize
+                    )
+                    biometry_output = biometry_output.permute(0, 1, 3, 4, 2).reshape(
+                        batch_size, -1, 3
+                    )
+                    origin_biometry_preds.append(biometry_output.clone())
+                        
+                    
                     kpts_output = kpts_output[..., self.kpt_index]
                     origin_kpts_preds.append(kpts_output.clone())
 
 
             else:
                 output = torch.cat(
-                    [reg_output, obj_output, cls_output, kpts_output], 1
+                    [reg_output, obj_output, cls_output, kpts_output, biometry_output], 1
                 )
                 # devunote: The indice is 4:6 because the output is [x, y, w, h, obj, cls, kpts]. And cls here seems to be 1-size because there is only human class has keypoints
                 output[:,4:6,:,:] = torch.sigmoid(output[:,4:6,:,:])
@@ -279,7 +334,8 @@ class YOLOXHeadKPTS(nn.Module):
         grid = self.grids[k]
 
         batch_size = output.shape[0]
-        n_ch = 5 + self.num_classes+ 3*self.num_kpts
+        n_ch = 5 + self.num_classes+ 3*self.num_kpts +\
+                3  # 3 biometry
         hsize, wsize = output.shape[-2:]
         if grid.shape[2:4] != output.shape[2:4]:
             yv, xv = torch.meshgrid([torch.arange(hsize), torch.arange(wsize)])
@@ -297,7 +353,7 @@ class YOLOXHeadKPTS(nn.Module):
         output[..., :2] = (output[..., :2] + grid) * stride
         output[..., 2:4] = torch.exp(output[..., 2:4]) * stride
         #output[..., 6:] = (output[..., 6:] +  kpt_grids.repeat(1,1,self.num_kpts)) * stride
-        output[..., 6:] = (2*output[..., 6:] -0.5 +  kpt_grids.repeat(1,1,self.num_kpts)) * stride
+        output[..., 6:6+self.num_kpts*3] = (2*output[..., 6:6+self.num_kpts*3] -0.5 +  kpt_grids.repeat(1,1,self.num_kpts)) * stride
         return output, grid
 
     def decode_outputs(self, outputs, dtype):
@@ -318,7 +374,7 @@ class YOLOXHeadKPTS(nn.Module):
         outputs[..., :2] = (outputs[..., :2] + grids) * strides
         outputs[..., 2:4] = torch.exp(outputs[..., 2:4]) * strides
         #outputs[...,  6:] = (outputs[..., 6:] + kpt_grids.repeat(1,1,self.num_kpts)) * strides
-        outputs[...,  6:] = (2*outputs[..., 6:] - 0.5  + kpt_grids.repeat(1,1,self.num_kpts)) * strides
+        outputs[...,  6:6+self.num_kpts*3] = (2*outputs[..., 6:6+self.num_kpts*3] - 0.5  + kpt_grids.repeat(1,1,self.num_kpts)) * strides
         return outputs
 
     def get_losses(
@@ -327,7 +383,7 @@ class YOLOXHeadKPTS(nn.Module):
         x_shifts,
         y_shifts,
         expanded_strides,
-        labels,
+        labels_dict,
         outputs,
         origin_preds,
         origin_kpts_preds,
@@ -336,8 +392,13 @@ class YOLOXHeadKPTS(nn.Module):
         bbox_preds = outputs[:, :, :4]  # [batch, n_anchors_all, 4]
         obj_preds = outputs[:, :, 4].unsqueeze(-1)  # [batch, n_anchors_all, 1]
         cls_preds = outputs[:, :, 5 : 5+self.num_classes]  # [batch, n_anchors_all, n_cls]
-        kpts_preds = outputs[:, :, 5+self.num_classes:]
+        kpts_preds = outputs[:, :, 5+self.num_classes:5+self.num_classes+3*self.num_kpts]  # [batch, n_anchors_all, 3*n_kpts]
+        
+        biometry_preds = outputs[:, :, 5+self.num_classes+3*self.num_kpts:5+self.num_classes+3*self.num_kpts+3]  # [batch, n_anchors_all, 3]
 
+        labels = labels_dict['target']
+        biometry_label = labels_dict['biometry'] 
+        
         # calculate targets
         mixup = labels.shape[2] > 5
         if mixup:
@@ -353,6 +414,12 @@ class YOLOXHeadKPTS(nn.Module):
         if self.use_l1:
             origin_preds = torch.cat(origin_preds, 1)
             origin_kpts_preds = torch.cat(origin_kpts_preds, 1)
+            
+            ## Devu note. the reason why dont use l1 loss here for biometry is because the original loss is already L1 loss.
+            # For another preds ike bbox, we use IOU and the drawback of IOU is that if the object is small, the prob of overlapping is small, 
+            # then when training the gradient signal is kind of weak because most of the time the IOU is 0, so the model dont know where to go.
+            # By adding l1 loss, we can make the gradient signal stronger. Because the closer the prediction to the target, the smaller the l1 loss.
+            # So the gradient signal is stronger.
 
         cls_targets = []
         reg_targets = []
@@ -360,6 +427,7 @@ class YOLOXHeadKPTS(nn.Module):
         l1_targets_kpts = []
         obj_targets = []
         kpts_targets = []
+        biometry_targets = []
         fg_masks = []
 
         num_fg = 0.0
@@ -378,10 +446,13 @@ class YOLOXHeadKPTS(nn.Module):
                 fg_mask = outputs.new_zeros(total_num_anchors).bool()
             else:
                 gt_bboxes_per_image = labels[batch_idx, :num_gt, 1:5]
-                gt_kpts_per_image = labels[batch_idx, :num_gt, 5:]
+                gt_kpts_per_image = labels[batch_idx, :num_gt, 5:5+2*self.num_kpts]
+                gt_biometry_per_image = biometry_label[batch_idx, :num_gt, :]
                 gt_classes = labels[batch_idx, :num_gt, 0]
                 bboxes_preds_per_image = bbox_preds[batch_idx]
-                kpts_preds_per_image = kpts_preds[batch_idx]
+                
+                # devu note, it is not being used because only bboxes is used to get assigments
+                # kpts_preds_per_image = kpts_preds[batch_idx]
 
                 try:
                     (
@@ -446,6 +517,7 @@ class YOLOXHeadKPTS(nn.Module):
                 obj_target = fg_mask.unsqueeze(-1)
                 reg_target = gt_bboxes_per_image[matched_gt_inds]
                 kpts_target = gt_kpts_per_image[matched_gt_inds]
+                biometry_target = gt_biometry_per_image[matched_gt_inds]
                 if self.use_l1:
                     l1_target = self.get_l1_target(
                         outputs.new_zeros((num_fg_img, 4)),
@@ -467,6 +539,7 @@ class YOLOXHeadKPTS(nn.Module):
             reg_targets.append(reg_target)
             kpts_targets.append(kpts_target)
             obj_targets.append(obj_target.to(dtype))
+            biometry_targets.append(biometry_target.to(dtype))
             fg_masks.append(fg_mask)
             if self.use_l1:
                 l1_targets.append(l1_target)
@@ -476,6 +549,7 @@ class YOLOXHeadKPTS(nn.Module):
         reg_targets = torch.cat(reg_targets, 0)
         kpts_targets = torch.cat(kpts_targets, 0)
         obj_targets = torch.cat(obj_targets, 0)
+        biometry_targets = torch.cat(biometry_targets, 0)
         fg_masks = torch.cat(fg_masks, 0)
         if self.use_l1:
             l1_targets = torch.cat(l1_targets, 0)
@@ -497,6 +571,11 @@ class YOLOXHeadKPTS(nn.Module):
                 kpts_preds.view(-1, self.num_kpts*3)[fg_masks], kpts_targets, reg_targets)
         loss_kpts = loss_kpts.sum() / num_fg
         loss_kpts_vis = loss_kpts_vis.sum() / num_fg
+        
+        loss_biometry = (
+            self.l1_loss(biometry_preds.view(-1, 3)[fg_masks], biometry_targets)
+        ).sum() / num_fg
+        # print(f'####### Lossbiometry: {loss_biometry}')
 
         if self.use_l1:
             loss_l1 = (
@@ -512,7 +591,7 @@ class YOLOXHeadKPTS(nn.Module):
             loss_l1_kpts = 0
 
         reg_weight = 5.0
-        loss = reg_weight * loss_iou + loss_obj + loss_cls + loss_l1 + reg_weight * loss_kpts + loss_kpts_vis + loss_l1_kpts
+        loss = reg_weight * loss_iou + loss_obj + loss_cls + loss_l1 + reg_weight * loss_kpts + loss_kpts_vis + loss_l1_kpts + loss_biometry
 
         return (
             loss,
