@@ -7,7 +7,8 @@ from .coco_classes import COCO_CLASSES
 from .lm_classes import LM_CLASSES
 from .ycbv_classes import YCBV_CLASSES
 from .datasets_wrapper import ConcatDataset, Dataset, MixConcatDataset
-from .mosaicdetection import MosaicDetection
+from .mosaicdetection import MosaicDetection as MosaicDetectionKpts
+from .mosaicdetection_backup import MosaicDetection
 from .voc import VOCDetection
 from .lmo import LMODataset, CADModelsLM
 from .ycbv import YCBVDataset, CADModelsYCBV

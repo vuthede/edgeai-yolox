@@ -300,11 +300,15 @@ class YOLOXHeadKPTS(nn.Module):
                 output = torch.cat(
                     [reg_output, obj_output, cls_output, kpts_output, biometry_output], 1
                 )
+                # print(f'reg_output shape:{reg_output.shape}. obj_output shape:{obj_output.shape}. cls_output shape:{cls_output.shape}. kpts_output shape:{kpts_output.shape}. biometry_output shape:{biometry_output.shape}')
+                # print(f'Yooooooo outputs shape0:{outputs.shape}')
+                
                 # devunote: The indice is 4:6 because the output is [x, y, w, h, obj, cls, kpts]. And cls here seems to be 1-size because there is only human class has keypoints
                 output[:,4:6,:,:] = torch.sigmoid(output[:,4:6,:,:])
 
             outputs.append(output)
 
+        
         if self.training:
             return self.get_losses(
                 imgs,
@@ -325,6 +329,9 @@ class YOLOXHeadKPTS(nn.Module):
             outputs = torch.cat(
                 [x.flatten(start_dim=2) for x in outputs], dim=2
             ).permute(0, 2, 1)
+            
+            # print(f'Yooooooo outputs shape:{outputs.shape}')
+            
             if self.decode_in_inference:
                 return self.decode_outputs(outputs, dtype=xin[0].type())
             else:

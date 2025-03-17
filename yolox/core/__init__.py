@@ -4,3 +4,4 @@
 
 from .launch import launch
 from .trainer import Trainer
+from .trainer_oms import Trainer as TrainerOMS

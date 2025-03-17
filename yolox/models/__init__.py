@@ -10,3 +10,4 @@ from .yolo_pafpn import YOLOPAFPN
 from .yolox import YOLOX
 from .yolo_object_pose_head import YOLOXObjectPoseHead
 from .yolo_kpts_head import YOLOXHeadKPTS
+from .yolox_oms import YOLOX as YOLOXOMS
