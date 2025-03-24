@@ -120,8 +120,10 @@ class Trainer:
 
         # Add each metric with the prefix in the key
         for key in info_dict.keys():
-            metrics[f"{prefix}_{key}"] = info_dict[key]
-            
+            if type(info_dict[key]) == torch.Tensor:
+                metrics[f"{prefix}_{key}"] = info_dict[key].cpu().item()
+            else:
+                metrics[f"{prefix}_{key}"] = info_dict[key]
         self.meter.update(metrics)
         
     
@@ -184,7 +186,7 @@ class Trainer:
             num_fg = outputs["human"]["num_fg"]
             # print(f'Yoooooooooooooooooooooooooooooooo: {outputs["human"]}')
             self._update_metrics(outputs["human"], iter_start_time=iter_start_time, prefix='human')
-            print(f'### loss human :{loss.item()}')
+            # print(f'### loss human :{loss.item()}')
         
         elif dataset_type == "face":
             loss  = outputs["face"]["total_loss"]
@@ -200,7 +202,7 @@ class Trainer:
             
             self._update_metrics(outputs["face"], iter_start_time, prefix='face')
             
-            print(f'### loss face :{loss.item()}')
+            # print(f'### loss face :{loss.item()}')
         
         elif dataset_type == "object":
             loss = outputs["object"]["total_loss"]
@@ -218,7 +220,7 @@ class Trainer:
             
             self._update_metrics(outputs["object"], iter_start_time, prefix='object')
             
-            print(f'### loss object :{loss.item()}')
+            # print(f'### loss object :{loss.item()}')
             
             # Forward pass
         
@@ -379,10 +381,9 @@ class Trainer:
         # Setup TensorBoard logging if enabled
         if self.rank == 0:
             os.makedirs(self.file_name, exist_ok=True)
-            # if self.args.logger == "tensorboard":
-            #     self.tblogger = SummaryWriter(
-            #         os.path.join(self.output_dir, "tensorboard")
-            #     )
+            self.tblogger = SummaryWriter(
+                os.path.join(self.exp.output_dir, "tensorboard", self.args.experiment_name)
+            )
             
             # Log training config to file
             # self.exp.update_config(self.file_name)
@@ -440,9 +441,9 @@ class Trainer:
                 
                 # Add common metrics
                 # import pdb; pdb.set_trace();
-                msg += "human_total_loss:{:.3f}, ".format(avg_metrics.get("human_total_loss", 0))
-                msg += "face_total_loss:{:.3f}, ".format(avg_metrics.get("face_total_loss", 0))
-                msg += "object_total_loss:{:.3f}, ".format(avg_metrics.get("object_total_loss", 0))
+                msg += "human_total_loss:{:.3f}, ".format(avg_metrics.get("human_total_loss", 0).avg)
+                msg += "face_total_loss:{:.3f}, ".format(avg_metrics.get("face_total_loss", 0).avg)
+                msg += "object_total_loss:{:.3f}, ".format(avg_metrics.get("object_total_loss", 0).avg)
                 
                 
                 # msg += "total_loss:{:.3f}, ".format(avg_metrics.get("total_loss", 0))
@@ -468,9 +469,9 @@ class Trainer:
                 logger.info(msg)
                 
                 # Log to TensorBoard if enabled
-                # if self.args.logger == "tensorboard":
-                #     self.tblogger.add_scalar("train/loss", avg_metrics["total_loss"], current_iter)
-                #     self.tblogger.add_scalar("train/lr", lr, current_iter)
+                self.tblogger.add_scalar("train/human_total_loss", avg_metrics.get("human_total_loss", 0).avg, current_iter)
+                self.tblogger.add_scalar("train/face_total_loss", avg_metrics.get("face_total_loss", 0).avg, current_iter)
+                self.tblogger.add_scalar("train/object_total_loss", avg_metrics.get("object_total_loss", 0).avg, current_iter)
                     # Log other metrics...
         
         # Save and evaluate model at specified intervals
