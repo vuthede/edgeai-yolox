@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from .yolo_head import YOLOXHead as YOLOXObjectHead
 from .yolo_kpts_head import YOLOXHeadKPTS
+from .yolo_face_kpts_head import  YOLOXHeadKPTS as YOLOFaceKPTSHead
 from .yolo_pafpn import YOLOPAFPN
 
 
@@ -24,6 +25,7 @@ class YOLOX(nn.Module):
         if head_dict is None:
             head_dict = {
                 "human": YOLOXHeadKPTS(1, default_sigmas=False),  # Human head with keypoints
+                "face" : YOLOFaceKPTSHead(1, default_sigmas=False),  # Face head with keypoints
                 "object": YOLOXObjectHead(80)  # Object detection head
             }
         
@@ -31,7 +33,7 @@ class YOLOX(nn.Module):
         self.backbone = backbone
         self.head_dict = nn.ModuleDict(head_dict)
 
-    def forward(self, x, targets=None, train_heads=["human", "object"]):
+    def forward(self, x, targets=None, train_heads=["human", "face", "object"]):
         # fpn output content features of [dark3, dark4, dark5]
         fpn_outs = self.backbone(x)
         
@@ -44,6 +46,12 @@ class YOLOX(nn.Module):
                 output_head_human = self.head_dict["human"](fpn_outs, targets, x)
                 loss, iou_loss, conf_loss, cls_loss, l1_loss, kpts_loss, kpts_vis_loss, loss_l1_kpts, num_fg = output_head_human
                 outputs["human"] = {"total_loss": loss, "iou_loss": iou_loss, "l1_loss": l1_loss, "conf_loss": conf_loss, "cls_loss": cls_loss, "kpts_loss": kpts_loss, "kpts_vis_loss": kpts_vis_loss, "l1_loss_kpts": loss_l1_kpts, "num_fg": num_fg}
+            
+            if "face" in train_heads:
+                # Only train face head
+                output_head_face = self.head_dict["face"](fpn_outs, targets, x)
+                loss, iou_loss, conf_loss, cls_loss, l1_loss, kpts_loss, kpts_vis_loss, loss_l1_kpts, num_fg = output_head_face
+                outputs["face"] = {"total_loss": loss, "iou_loss": iou_loss, "l1_loss": l1_loss, "conf_loss": conf_loss, "cls_loss": cls_loss, "kpts_loss": kpts_loss, "kpts_vis_loss": kpts_vis_loss, "l1_loss_kpts": loss_l1_kpts, "num_fg": num_fg}
             
             if "object" in train_heads:
                 # Only train object head

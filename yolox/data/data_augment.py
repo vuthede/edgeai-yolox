@@ -196,6 +196,7 @@ def _mirror(image, boxes, prob=0.5, human_pose=False, object_pose=False, human_k
         boxes[:, 0::2] = width - boxes[:, 2::-2]
         if human_pose:
             human_kpts[:, 0::2] = (width - human_kpts[:, 0::2])*(human_kpts[:, 0::2]!=0)
+            # print(f'devu debug flip_index shape : {flip_index}')
             human_kpts[:, 0::2] = human_kpts[:, 0::2][:, flip_index]
             human_kpts[:, 1::2] = human_kpts[:, 1::2][:, flip_index]
     if human_pose:

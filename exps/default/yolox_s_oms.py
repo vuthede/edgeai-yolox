@@ -151,6 +151,26 @@ class Exp(BaseExp):
             "mosaic_prob": 1.0,
             "mixup_prob": 1.0,
         }      
+        
+        # face branch
+        self.face_params = {
+            "num_classes": 1,
+            "num_kpts": 5,
+            "default_sigmas": False,
+            "data_dir": "/media/vuthede/Lexar/data/face_detection/widerface/train",
+            "train_ann": "annotations_coco.json",  
+            "name": "images",
+            "flip_prob": 0.5,
+            "hsv_prob": 0.5,
+            "degrees": 10.0,
+            "translate": 0.1,
+            "mosaic_scale": [0.8, 1.2],
+            "mixup_scale": [0.5, 1.5],
+            "shear": 2.0,
+            "enable_mixup": True,
+            "mosaic_prob": 1.0,
+            "mixup_prob": 1.0,
+        }    
     
         # Object branch
         # Object branch
@@ -232,6 +252,17 @@ class Exp(BaseExp):
             targets['target'][..., 2::2] = targets['target'][..., 2::2] * scale_y
         return inputs, targets
     
+    def preprocess_face(self, inputs, targets, tsize):
+        scale_y = tsize[0] / self.input_size[0]
+        scale_x = tsize[1] / self.input_size[1]
+        if scale_x != 1 or scale_y != 1:
+            inputs = nn.functional.interpolate(
+                inputs, size=tsize, mode="bilinear", align_corners=False
+            )
+            targets['target'][..., 1::2] = targets['target'][..., 1::2] * scale_x
+            targets['target'][..., 2::2] = targets['target'][..., 2::2] * scale_y
+        return inputs, targets
+    
     # Preprocess objects
     def preprocess_object(self, inputs, targets, tsize):
         # assert type(targets) == dict, f'''targets should be dict, got {type(targets)}'''
@@ -247,7 +278,7 @@ class Exp(BaseExp):
         return inputs, targets
         
     def get_model(self):
-        from yolox.models import YOLOXOMS, YOLOPAFPN, YOLOXHeadKPTS, YOLOXHead as YOLOXObjectHead
+        from yolox.models import YOLOXOMS, YOLOPAFPN, YOLOXHeadKPTS, YOLOFaceKPTSHead,YOLOXHead as YOLOXObjectHead
         def init_yolo(M):
             for m in M.modules():
                 if isinstance(m, nn.BatchNorm2d):
@@ -259,8 +290,9 @@ class Exp(BaseExp):
             in_channels = [256, 512, 1024]
             backbone = YOLOPAFPN(self.depth, self.width, act=self.act, in_channels=in_channels)
             head_human = YOLOXHeadKPTS(self.human_params["num_classes"], self.width, in_channels=in_channels, act=self.act, num_kpts=self.human_params["num_kpts"], default_sigmas=self.human_params["default_sigmas"])
+            head_face = YOLOXHeadKPTS(self.face_params["num_classes"], self.width, in_channels=in_channels, act=self.act, num_kpts=self.face_params["num_kpts"], default_sigmas=self.face_params["default_sigmas"])
             head_object = YOLOXObjectHead(self.object_params["num_classes"], width=self.width, in_channels=in_channels)
-            self.model = YOLOXOMS(backbone,  head_dict={"human": head_human, "object": head_object})
+            self.model = YOLOXOMS(backbone,  head_dict={"human": head_human, "face":head_face,"object": head_object})
         
         self.model.apply(init_yolo)
         for head_key in self.model.head_dict.keys():
@@ -269,7 +301,7 @@ class Exp(BaseExp):
         return self.model
     
     def _init_human_dataset(self, batch_size, is_distributed, no_aug=False, cache_img=False):
-        from yolox.data import  COCOKPTSDataset, TrainTransformKpts, MosaicDetectionKpts
+        from yolox.data import  COCOKPTSDataset, COCOFaceKPTSDataset, TrainTransformKpts, MosaicDetectionKpts
        
         dataset = COCOKPTSDataset(
             data_dir=self.human_params["data_dir"],
@@ -311,6 +343,50 @@ class Exp(BaseExp):
         
         return dataset
     
+    def _init_face_dataset(self, batch_size, is_distributed, no_aug=False, cache_img=False):
+        from yolox.data import  COCOFaceKPTSDataset, TrainTransformKpts, MosaicDetectionKpts
+       
+        dataset = COCOFaceKPTSDataset(
+            data_dir=self.face_params["data_dir"],
+            json_file=self.face_params["train_ann"],
+            num_kpts=self.face_params["num_kpts"],
+            name=self.face_params["name"],
+            img_size=self.input_size,
+            preproc=TrainTransformKpts(
+                max_labels=50,
+                flip_prob=self.face_params["flip_prob"],
+                hsv_prob=self.face_params["hsv_prob"],
+                num_kpts=self.face_params["num_kpts"]),
+            cache=cache_img,
+        )
+
+        dataset = MosaicDetectionKpts(
+            dataset,
+            mosaic=not no_aug,
+            img_size=self.input_size,
+            preproc=TrainTransformKpts(
+                max_labels=120,
+                flip_prob=self.face_params["flip_prob"],
+                hsv_prob=self.face_params["hsv_prob"],
+                object_pose=False,
+                human_pose=True,
+                flip_index=dataset.flip_index,
+                num_kpts=self.face_params["num_kpts"],
+            ),
+            num_kpts=self.face_params["num_kpts"],
+            degrees=self.face_params["degrees"],
+            translate=self.face_params["translate"],
+            mosaic_scale=self.face_params["mosaic_scale"],
+            mixup_scale=self.face_params["mixup_scale"],
+            shear=self.face_params["shear"],
+            enable_mixup=self.face_params["enable_mixup"],
+            mosaic_prob=self.face_params["mosaic_prob"],
+            mixup_prob=self.face_params["mixup_prob"],
+        )
+        
+        return dataset
+    
+    
     def _init_object_dataset(self, batch_size, is_distributed, no_aug=False, cache_img=False):
         from yolox.data import  COCODataset, TrainTransform, MosaicDetection
         dataset = COCODataset(
@@ -348,9 +424,9 @@ class Exp(BaseExp):
         self.dataset = dataset
         return dataset
 
-    def _create_alternating_dataloader(self, human_dataset, object_dataset, batch_size, is_distributed, no_aug):
+    def _create_alternating_dataloader(self, human_dataset, face_dataset, object_dataset, batch_size, is_distributed, no_aug):
         """
-        Strategy 1: Create dataloaders that alternate between human and object batches.
+        Strategy 1: Create dataloaders that alternate between human and face and object batches.
         Returns a dict with separate dataloaders.
         """
         from yolox.data import (
@@ -361,6 +437,7 @@ class Exp(BaseExp):
         )
         
         sampler_h = InfiniteSampler(len(human_dataset), seed=self.seed if self.seed else 0)
+        sampler_f = InfiniteSampler(len(face_dataset), seed=self.seed if self.seed else 0)
         sampler_o = InfiniteSampler(len(object_dataset), seed=self.seed if self.seed else 0)
         
         batch_sampler_h = YoloBatchSampler(
@@ -369,6 +446,14 @@ class Exp(BaseExp):
             drop_last=False,
             mosaic=not no_aug,
         )
+        
+        batch_sampler_f = YoloBatchSampler(
+            sampler=sampler_f,
+            batch_size=batch_size,
+            drop_last=False,
+            mosaic=not no_aug
+        )
+        
         batch_sampler_o = YoloBatchSampler(
             sampler=sampler_o,
             batch_size=batch_size,
@@ -384,6 +469,14 @@ class Exp(BaseExp):
             worker_init_fn=worker_init_reset_seed,
         )
         
+        dataloader_face = DataLoader(
+            face_dataset,
+            batch_sampler=batch_sampler_f,
+            num_workers=self.data_num_workers,
+            pin_memory=True,
+            worker_init_fn=worker_init_reset_seed,
+        )
+        
         dataloader_object = DataLoader(
             object_dataset,
             batch_sampler=batch_sampler_o,
@@ -394,6 +487,7 @@ class Exp(BaseExp):
     
         return {
             "human": dataloader_human,
+            "face": dataloader_face,
             "object": dataloader_object,
             "strategy": "alternating"
         }
@@ -493,12 +587,13 @@ class Exp(BaseExp):
         local_rank = get_local_rank()
         with wait_for_the_master(local_rank):
             human_dataset = self._init_human_dataset(batch_size, is_distributed, no_aug, cache_img)
+            face_dataset = self._init_face_dataset(batch_size, is_distributed, no_aug, cache_img)
             object_dataset = self._init_object_dataset(batch_size, is_distributed, no_aug, cache_img)
         
             # Strategy 1: Alternating batches (1 human batch, 1 object batch)
             if self.train_strategy == "alternating":
                 return self._create_alternating_dataloader(
-                    human_dataset, object_dataset, batch_size, is_distributed, no_aug
+                    human_dataset, face_dataset, object_dataset, batch_size, is_distributed, no_aug
                 )
             
             # Strategy 2: Combined dataset (mix samples from both datasets)

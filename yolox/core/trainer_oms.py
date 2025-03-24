@@ -110,16 +110,35 @@ class Trainer:
             self.train_one_iter()
             self.after_iter()
 
+    def _update_metrics(self, info_dict, iter_start_time, prefix='face'):
+        metrics = {
+            f"{prefix}_iter_time": time.time() - iter_start_time,
+            f"{prefix}_lr": self.optimizer.param_groups[0]["lr"],
+            # f"{prefix}_dataset_type": info_dict.get("dataset_type", "unknown"),
+        }
+
+
+        # Add each metric with the prefix in the key
+        for key in info_dict.keys():
+            metrics[f"{prefix}_{key}"] = info_dict[key]
+            
+        self.meter.update(metrics)
+        
+    
     def train_one_iter(self):
         iter_start_time = time.time()
     
         # Different behavior based on training strategy
         if self.train_strategy == "alternating":
             # Process one batch from each dataset type
-            if self.iter % 2 == 0:
+            if self.iter % 3 == 0:
                 # Human batch
                 inps, targets, _ = self.prefetcher_human.next()
                 dataset_type = "human"
+            elif self.iter % 3 == 1:
+                # Object batch
+                inps, targets, _ = self.prefetcher_face.next()
+                dataset_type = "face"
             else:
                 # Object batch
                 inps, targets, _ = self.prefetcher_object.next()
@@ -145,6 +164,8 @@ class Trainer:
         # Preprocess data
         if dataset_type == "human":
             inps, targets = self.exp.preprocess_human(inps, targets, self.input_size)
+        elif dataset_type == "face":
+            inps, targets = self.exp.preprocess_face(inps, targets, self.input_size)
         elif dataset_type == "object":
             inps, targets = self.exp.preprocess_object(inps, targets, self.input_size)
                 
@@ -161,8 +182,26 @@ class Trainer:
             kpts_vis_loss = outputs["human"]["kpts_vis_loss"]
             l1_loss_kpts = outputs["human"]["l1_loss_kpts"]
             num_fg = outputs["human"]["num_fg"]
+            # print(f'Yoooooooooooooooooooooooooooooooo: {outputs["human"]}')
+            self._update_metrics(outputs["human"], iter_start_time=iter_start_time, prefix='human')
             print(f'### loss human :{loss.item()}')
+        
+        elif dataset_type == "face":
+            loss  = outputs["face"]["total_loss"]
+            iou_loss = outputs["face"]["iou_loss"]
+            conf_loss = outputs["face"]["conf_loss"]
+            cls_loss = outputs["face"]["cls_loss"]
+            l1_loss = outputs["face"]["l1_loss"]
+            kpts_loss = outputs["face"]["kpts_loss"]
+            kpts_vis_loss = outputs["face"]["kpts_vis_loss"]
+            l1_loss_kpts = outputs["face"]["l1_loss_kpts"]
+            num_fg = outputs["face"]["num_fg"]
+            # print(f'Yoooooooooooooooooooooooooooooooo: {outputs["face"]}')
             
+            self._update_metrics(outputs["face"], iter_start_time, prefix='face')
+            
+            print(f'### loss face :{loss.item()}')
+        
         elif dataset_type == "object":
             loss = outputs["object"]["total_loss"]
             iou_loss = outputs["object"]["iou_loss"] 
@@ -175,6 +214,10 @@ class Trainer:
             kpts_loss = 0
             kpts_vis_loss = 0
             l1_loss_kpts = 0
+            # print(f'Yoooooooooooooooooooooooooooooooo: {outputs["object"]}')
+            
+            self._update_metrics(outputs["object"], iter_start_time, prefix='object')
+            
             print(f'### loss object :{loss.item()}')
             
             # Forward pass
@@ -294,8 +337,9 @@ class Trainer:
         if self.train_strategy == "alternating":
             # Create separate prefetchers for human and object datasets
             self.prefetcher_human = DataPrefetcher(data_loaders["human"])
+            self.prefetcher_face = DataPrefetcher(data_loaders["face"])
             self.prefetcher_object = DataPrefetcher(data_loaders["object"])
-            self.max_iter = len(data_loaders["human"]) + len(data_loaders["object"])
+            self.max_iter = len(data_loaders["human"]) + len(data_loaders['face']) + len(data_loaders["object"])
         else:
             # Single prefetcher for combined or proportional strategy
             dataloader = data_loaders.get("combined", data_loaders.get("proportional"))
@@ -357,6 +401,7 @@ class Trainer:
         # Reset prefetchers based on training strategy
         if self.train_strategy == "alternating":
             self.prefetcher_human.preload()
+            self.prefetcher_face.preload()
             self.prefetcher_object.preload()
         else:
             self.prefetcher.preload()
@@ -378,7 +423,7 @@ class Trainer:
         # Only log on certain iterations
         if (self.iter + 1) % self.exp.print_interval == 0:
             # Convert to average metrics
-            avg_metrics = self.meter.get_filtered_meter()
+            avg_metrics = self.meter.get_filtered_meter(filter_key='loss')
             
             # Get current iteration and learning rate
             current_iter = self.epoch * self.max_iter + self.iter + 1
@@ -394,24 +439,30 @@ class Trainer:
                 )
                 
                 # Add common metrics
-                msg += "total_loss:{:.3f}, ".format(avg_metrics.get("total_loss", 0))
-                msg += "iou_loss:{:.3f}, ".format(avg_metrics.get("iou_loss", 0))
-                msg += "conf_loss:{:.3f}, ".format(avg_metrics.get("conf_loss", 0))
-                msg += "cls_loss:{:.3f}, ".format(avg_metrics.get("cls_loss", 0))
-                msg += "l1_loss:{:.3f}, ".format(avg_metrics.get("l1_loss", 0))
+                # import pdb; pdb.set_trace();
+                msg += "human_total_loss:{:.3f}, ".format(avg_metrics.get("human_total_loss", 0))
+                msg += "face_total_loss:{:.3f}, ".format(avg_metrics.get("face_total_loss", 0))
+                msg += "object_total_loss:{:.3f}, ".format(avg_metrics.get("object_total_loss", 0))
                 
-                # Add keypoint-specific metrics when available
-                if "kpts_loss" in avg_metrics:
-                    msg += "kpts_loss:{:.3f}, ".format(avg_metrics["kpts_loss"])
-                    msg += "kpts_vis_loss:{:.3f}, ".format(avg_metrics["kpts_vis_loss"])
-                    msg += "l1_loss_kpts:{:.3f}, ".format(avg_metrics["l1_loss_kpts"])
                 
-                # Add dataset type when available
-                if "dataset_type" in avg_metrics:
-                    msg += "dataset:{}, ".format(avg_metrics["dataset_type"])
+                # msg += "total_loss:{:.3f}, ".format(avg_metrics.get("total_loss", 0))
+                # msg += "iou_loss:{:.3f}, ".format(avg_metrics.get("iou_loss", 0))
+                # msg += "conf_loss:{:.3f}, ".format(avg_metrics.get("conf_loss", 0))
+                # msg += "cls_loss:{:.3f}, ".format(avg_metrics.get("cls_loss", 0))
+                # msg += "l1_loss:{:.3f}, ".format(avg_metrics.get("l1_loss", 0))
                 
-                msg += "num_fg:{}, ".format(int(avg_metrics.get("num_fg", 0)))
-                msg += "size:{}, ".format(self.exp.input_size)
+                # # Add keypoint-specific metrics when available
+                # if "kpts_loss" in avg_metrics:
+                #     msg += "kpts_loss:{:.3f}, ".format(avg_metrics["kpts_loss"])
+                #     msg += "kpts_vis_loss:{:.3f}, ".format(avg_metrics["kpts_vis_loss"])
+                #     msg += "l1_loss_kpts:{:.3f}, ".format(avg_metrics["l1_loss_kpts"])
+                
+                # # Add dataset type when available
+                # if "dataset_type" in avg_metrics:
+                #     msg += "dataset:{}, ".format(avg_metrics["dataset_type"])
+                
+                # msg += "num_fg:{}, ".format(int(avg_metrics.get("num_fg", 0)))
+                # msg += "size:{}, ".format(self.exp.input_size)
                 # msg += "time:{:.4f}s".format(avg_metrics["iter_time"])
                 
                 logger.info(msg)

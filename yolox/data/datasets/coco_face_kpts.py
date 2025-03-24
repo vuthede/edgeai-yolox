@@ -27,7 +27,7 @@ class COCOKPTSDataset(Dataset):
         preproc=None,
         cache=False,
         human_pose=True,
-        num_kpts=17,
+        num_kpts=5,
         default_flip_index=True
     ):
         """
@@ -45,6 +45,7 @@ class COCOKPTSDataset(Dataset):
         self.data_dir = data_dir
         self.json_file = json_file
         self.num_kpts = num_kpts
+        
 
         self.coco = COCO(os.path.join(self.data_dir, "annotations", self.json_file))
         self.ids = self.coco.getImgIds()
@@ -57,11 +58,14 @@ class COCOKPTSDataset(Dataset):
         self.preproc = preproc
         self.human_pose = human_pose
         self.annotations, self.ids = self._load_coco_annotations()
-        self.flip_index = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15] if default_flip_index else [i for i in range(num_kpts)]
+        
+        assert self.num_kpts ==5, "Only 5 keypoints are supported for now"
+        assert self.human_pose, "It should be True because this dataset is the face  + face keypoints dataset"
+        self.flip_index = [1, 0, 2, 4, 3] if default_flip_index else [i for i in range(self.num_kpts)]
+
         if cache:
             self._cache_images()
         
-        # import pdb; pdb.set_trace()
 
     def __len__(self):
         return len(self.annotations)
@@ -165,14 +169,10 @@ class COCOKPTSDataset(Dataset):
         img_info = (height, width)
         resized_info = (int(height * r), int(width * r))
 
-        # Process biometry information such as weight, height, age
-        biometry = np.zeros((num_objs, 3), dtype=np.float32)  # (height, weight, age)
+        # We call biometry, but it will be emotion, face-related features.
+        N_face_features = 3
+        biometry = np.zeros((num_objs, N_face_features), dtype=np.float32)  # (height, weight, age)
 
-        for ix, obj in enumerate(objs):
-            # Assuming obj contains these fields already preprocessed
-            biometry[ix, 0] = obj.get("height", -1.0)
-            biometry[ix, 1] = obj.get("weight", -1.0)
-            biometry[ix, 2] = obj.get("age", -1.0)
 
 
 
@@ -242,7 +242,7 @@ class COCOKPTSDataset(Dataset):
         img, target, img_info, img_id, biometry = self.pull_item(index)
 
         if self.preproc is not None:
-            img, target, biometry= self.preproc(img, target, self.input_dim, biometry)
+            img, target, biometry = self.preproc(img, target, self.input_dim, biometry)
         target = dict(target=target, biometry=biometry)
         return img, target, img_info, img_id
 
@@ -254,9 +254,9 @@ def visualize_wo_transform():
     import matplotlib.pyplot as plt
     
     dataset = COCOKPTSDataset(
-    data_dir="/home/vuthede/fiftyone/coco-2017/validation",
-    json_file="person_keypoints_val2017_with_random_bimometry.json",
-    name="val2017",
+    data_dir="/media/vuthede/Lexar/data/face_detection/widerface/train",
+    json_file="annotations_coco.json",
+    name="images",
     img_size=(640, 640),
     )
     
@@ -283,51 +283,51 @@ def visualize_wo_transform():
     
 
 if __name__ == "__main__":
-    from yolox.data import COCOKPTSDataset, MosaicDetectionKpts, TrainTransformKpts
+    from yolox.data import COCOFaceKPTSDataset, MosaicDetectionKpts, TrainTransformKpts
     import cv2
     import numpy as np
     import matplotlib.pyplot as plt
     
-    flip_index = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
-    dataset = COCOKPTSDataset(
-        data_dir="/home/vuthede/fiftyone/coco-2017/validation",
-        json_file="person_keypoints_val2017_with_random_bimometry.json",
-        name="val2017",
+    flip_index=[1, 0, 2, 4, 3]
+    dataset = COCOFaceKPTSDataset(
+        data_dir="/media/vuthede/Lexar/data/face_detection/widerface/train",
+        json_file="annotations_coco.json",
+        name="images",
         img_size=(640, 640),
         preproc=TrainTransformKpts(
+                max_labels=120,
+                flip_prob=0.0,
+                hsv_prob=0.5,
+                object_pose=False,
+                human_pose=True,
+                num_kpts=5,
+                flip_index=flip_index,
+        ),
+    )
+    
+    dataset = MosaicDetectionKpts(
+            dataset,
+            mosaic=True,
+            img_size=(640, 640),
+            preproc=TrainTransformKpts(
                 max_labels=120,
                 flip_prob=0.5,
                 hsv_prob=0.5,
                 object_pose=False,
                 human_pose=True,
-                num_kpts=17,
-                flip_index=flip_index
-        ),
-    )
-    
-    # dataset = MosaicDetectionKpts(
-    #         dataset,
-    #         mosaic=True,
-    #         img_size=(640, 640),
-    #         preproc=TrainTransformKpts(
-    #             max_labels=120,
-    #             flip_prob=0.5,
-    #             hsv_prob=0.5,
-    #             object_pose=False,
-    #             human_pose=True,
-    #             flip_index=dataset.flip_index,
-    #             num_kpts=17,
-    #         ),
-    #         num_kpts=17,
-    #         degrees=0.0,
-    #         translate=0.0,
-    #         mosaic_scale=(0.4, 0.6),
-    #         mixup_scale=(0.5,1.5),
-    #         shear=0.0,
-    #         enable_mixup=False,
-    #         mosaic_prob=0.5,
-    #         mixup_prob=0.1,
-    #     )
+                flip_index=dataset.flip_index,
+                num_kpts=5,
+            ),
+            num_kpts=5,
+            degrees=0.0,
+            translate=0.0,
+            mosaic_scale=(0.4, 0.6),
+            mixup_scale=(0.5,1.5),
+            shear=0.0,
+            enable_mixup=False,
+            mosaic_prob=0.5,
+            mixup_prob=0.1,
+        )
 
 
     for i in range(100):
@@ -373,9 +373,9 @@ if __name__ == "__main__":
             print(f'Class ID: {class_id}, Num keypoints: {len(kpts)}')
             
             # Add biometry info using putTExt
-            cv2.putText(img, f'Height: {biometry[j, 0]}', (x1, y1-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            cv2.putText(img, f'Weight: {biometry[j, 1]}', (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            cv2.putText(img, f'Age: {biometry[j, 2]}', (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            # cv2.putText(img, f'Height: {biometry[j, 0]}', (x1, y1-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            # cv2.putText(img, f'Weight: {biometry[j, 1]}', (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            # cv2.putText(img, f'Age: {biometry[j, 2]}', (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
             
 

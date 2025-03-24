@@ -16,32 +16,7 @@ from yolox.core import launch, TrainerOMS as Trainer
 from yolox.exp import get_exp
 from yolox.utils import configure_nccl, configure_omp, get_num_devices
 
-_SUPPORTED_DATASETS = ["coco", "lm", "lmo", "ycbv", "tless", "coco_kpts"]
-_NUM_CLASSES = {"coco":80, "lm":15, "lmo": 8, "ycbv": 21, "tless": 30, "coco_kpts":1}
-_VAL_ANN = {
-    "coco":"instances_val2017.json", 
-    "lm":"instances_test.json",
-    "lmo":"instances_test_bop.json",
-    "ycbv": "instances_test_bop.json",
-    "tless": "instances_test_bop.json",
-    "coco_kpts": "person_keypoints_val2017.json",
-}
-_TRAIN_ANN = {
-    "coco":"instances_train2017.json", 
-    "lm":"instances_train.json",
-    "lmo":"instances_train_pbr.json",   #This can be the default setting for the LMO datase
-    "ycbv": "instances_train.json",
-    "tless": "instances_train.json", #"instances_train.json"
-    "coco_kpts": "person_keypoints_train2017.json",
-}
-_SUPPORTED_TASKS = {
-    "coco":["2dod"],
-    "lm":["2dod", "object_pose"],
-    "lmo": ["2dod", "object_pose"],
-    "ycbv": ["2dod", "object_pose"],
-    "tless": ["2dod", "object_pose"],
-    "coco_kpts": ["2dod", "human_pose"]
-}
+
 
 def make_parser():
     parser = argparse.ArgumentParser("YOLOX train parser")
