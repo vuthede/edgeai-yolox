@@ -76,6 +76,11 @@ class COCOKPTSDataset(Dataset):
     def _load_coco_annotations(self):
         annotations = [self.load_anno_from_ids(_ids) for _ids in self.ids if self.load_anno_from_ids(_ids) is not None]
         ids = [ _ids for _ids in self.ids if self.load_anno_from_ids(_ids) is not None]
+        
+        # Get only 30 samples for testig the overfit problems
+        # annotations = annotations[:30]
+        # ids = ids[:30]
+        
         return annotations, ids
     def _cache_images(self):
         logger.warning(

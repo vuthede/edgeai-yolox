@@ -9,113 +9,27 @@ import torch.distributed as dist
 import torch.nn as nn
 import numpy as np
 
-class CombinedDataset(torch.utils.data.Dataset):
-    """
-    Dataset that combines human and object datasets with metadata to track source.
-    """
-    
-    def __init__(self, human_dataset, object_dataset):
-        self.human_dataset = human_dataset
-        self.object_dataset = object_dataset
-        self.human_size = len(human_dataset)
-        self.object_size = len(object_dataset)
-        self.total_size = self.human_size + self.object_size
-    
-    def __len__(self):
-        return self.total_size
-    
-    def __getitem__(self, idx):
-        if idx < self.human_size:
-            # Get sample from human dataset
-            data = self.human_dataset[idx]
-            data["dataset_type"] = "human"
-        else:
-            # Get sample from object dataset
-            data = self.object_dataset[idx - self.human_size]
-            data["dataset_type"] = "object"
-        
-        return data
-
-class ProportionalSampler(torch.utils.data.Sampler):
-    """
-    Sampler that samples from human and object datasets proportionally.
-    """
-    
-    def __init__(self, human_dataset_size, object_dataset_size, human_ratio=0.5, seed=0):
-        self.human_dataset_size = human_dataset_size
-        self.object_dataset_size = object_dataset_size
-        self.human_ratio = human_ratio
-        self.object_ratio = 1.0 - human_ratio
-        self.seed = seed
-        self.rng = np.random.RandomState(seed)
-        
-        # Calculate max epochs to balance datasets
-        self.total_samples = max(
-            int(human_dataset_size / human_ratio) if human_ratio > 0 else 0,
-            int(object_dataset_size / self.object_ratio) if self.object_ratio > 0 else 0
-        )
-        
-        # Calculate samples per epoch
-        self.human_samples_per_epoch = int(self.total_samples * human_ratio)
-        self.object_samples_per_epoch = int(self.total_samples * self.object_ratio)
-    
-    def __iter__(self):
-        # Generate human indices
-        human_indices = self.rng.randint(0, self.human_dataset_size, size=self.human_samples_per_epoch)
-        
-        # Generate object indices (shifted to account for human dataset size)
-        object_indices = self.rng.randint(0, self.object_dataset_size, size=self.object_samples_per_epoch)
-        object_indices = object_indices + self.human_dataset_size
-        
-        # Combine and shuffle
-        all_indices = np.concatenate([human_indices, object_indices])
-        self.rng.shuffle(all_indices)
-        
-        return iter(all_indices.tolist())
-    
-    def __len__(self):
-        return self.total_samples
-
-class ProportionalDataset(torch.utils.data.Dataset):
-    """
-    Dataset that works with ProportionalSampler to provide combined access to both datasets.
-    """
-    
-    def __init__(self, human_dataset, object_dataset):
-        self.human_dataset = human_dataset
-        self.object_dataset = object_dataset
-        self.human_size = len(human_dataset)
-        self.object_size = len(object_dataset)
-        self.total_size = self.human_size + self.object_size
-    
-    def __len__(self):
-        return self.total_size
-    
-    def __getitem__(self, idx):
-        if idx < self.human_size:
-            # Get sample from human dataset
-            data = self.human_dataset[idx]
-            data["dataset_type"] = "human"
-        else:
-            # Get sample from object dataset
-            data = self.object_dataset[idx - self.human_size]
-            data["dataset_type"] = "object"
-        
-        return data
     
 class Exp(BaseExp):
     def __init__(self):
         super(BaseExp, self).__init__()
         self.seed = None
-        self.depth = 0.66
-        self.width = 0.25
+        ## Config of yolox Dat
+        # self.depth = 0.66
+        # self.width = 0.25
+        
+        ## Default config of yolox-s version
+        self.depth = 0.33
+        self.width = 0.5
+        
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
         self.act = "relu"
         self.input_size = (640, 640)
         self.data_num_workers = 4
         
         
-        self.warmup_epochs = 5
+        # dododevu
+        self.warmup_epochs = 0
         self.max_epoch = 300
         self.warmup_lr = 0
         self.basic_lr_per_img = 0.01 / 64.0
@@ -126,7 +40,7 @@ class Exp(BaseExp):
         self.weight_decay = 5e-4
         self.momentum = 0.9
         self.print_interval = 10
-        self.eval_interval = 10
+        self.eval_interval = 1
         self.test_size = (640, 640)
         self.test_conf = 0.01
         self.nmsthre = 0.65
@@ -276,7 +190,28 @@ class Exp(BaseExp):
             targets[..., 1::2] = targets[..., 1::2] * scale_x
             targets[..., 2::2] = targets[..., 2::2] * scale_y
         return inputs, targets
+    
+    def using_backbone_pretrained_coco(self, backbone, ckpt="pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth"):
+        """
+        Load the pretrained model from YOLOX with COCO dataset.
+        """
+        ckpt = torch.load(ckpt, map_location="cpu")
+        state_dict = ckpt["model"]
+        new_state_dict = {}
+        # Get only the backbone state dict
+        # Because the checkpoint there is backbone.backbone . So will remove the first backbone.
+        for k, v in state_dict.items():
+            if "backbone" in k:
+                new_k = k[9:] # remove "backbone."
+                new_state_dict[new_k] = v
         
+        
+        backbone.load_state_dict(new_state_dict)
+        
+        return backbone
+    
+
+    
     def get_model(self):
         from yolox.models import YOLOXOMS, YOLOPAFPN, YOLOXHeadKPTS, YOLOFaceKPTSHead,YOLOXHead as YOLOXObjectHead
         def init_yolo(M):
@@ -288,15 +223,22 @@ class Exp(BaseExp):
         
         if getattr(self, "model", None) is None:
             in_channels = [256, 512, 1024]
-            backbone = YOLOPAFPN(self.depth, self.width, act=self.act, in_channels=in_channels)
+            backbone = YOLOPAFPN(self.depth, self.width, act=self.act, in_channels=in_channels, conv_focus=True)
+            try:
+                backbone = self.using_backbone_pretrained_coco(backbone)
+                print("########################### Using pretrained model backbone from COCO")
+            except Exception as e:
+                print(f"Error when loading pretrained model from coco: {e}")
+            
             head_human = YOLOXHeadKPTS(self.human_params["num_classes"], self.width, in_channels=in_channels, act=self.act, num_kpts=self.human_params["num_kpts"], default_sigmas=self.human_params["default_sigmas"])
-            head_face = YOLOXHeadKPTS(self.face_params["num_classes"], self.width, in_channels=in_channels, act=self.act, num_kpts=self.face_params["num_kpts"], default_sigmas=self.face_params["default_sigmas"])
-            head_object = YOLOXObjectHead(self.object_params["num_classes"], width=self.width, in_channels=in_channels)
+            head_face = YOLOFaceKPTSHead(self.face_params["num_classes"], self.width, in_channels=in_channels, act=self.act, num_kpts=self.face_params["num_kpts"], default_sigmas=self.face_params["default_sigmas"])
+            head_object = YOLOXObjectHead(self.object_params["num_classes"], act=self.act,width=self.width, in_channels=in_channels)
             self.model = YOLOXOMS(backbone,  head_dict={"human": head_human, "face":head_face,"object": head_object})
         
         self.model.apply(init_yolo)
         for head_key in self.model.head_dict.keys():
             self.model.head_dict[head_key].initialize_biases(1e-2)
+            
 
         return self.model
     
@@ -492,79 +434,7 @@ class Exp(BaseExp):
             "strategy": "alternating"
         }
 
-    def _create_combined_dataloader(self, human_dataset, object_dataset, batch_size, is_distributed):
-        """
-        Strategy 2: Create a dataloader using a combined dataset.
-        Data from both sources will be mixed within batches.
-        """
-        from yolox.data import (
-            DataLoader,
-            InfiniteSampler,
-            YoloBatchSampler,
-            worker_init_reset_seed,
-        )
-        
-        # Create a dataset that combines both - will need a custom CombinedDataset class
-        combined_dataset = CombinedDataset(human_dataset, object_dataset)
-        
-        sampler = InfiniteSampler(len(combined_dataset), seed=self.seed if self.seed else 0)
-        
-        batch_sampler = YoloBatchSampler(
-            sampler=sampler,
-            batch_size=batch_size,
-            drop_last=False,
-            mosaic=not self.no_aug,
-        )
-        
-        dataloader = DataLoader(
-            combined_dataset,
-            batch_sampler=batch_sampler,
-            num_workers=self.data_num_workers,
-            pin_memory=True,
-            worker_init_fn=worker_init_reset_seed,
-        )
-        
-        return {
-            "combined": dataloader,
-            "strategy": "combined"
-        }
 
-    def _create_proportional_dataloader(self, human_dataset, object_dataset, batch_size, is_distributed, human_ratio=0.5):
-        """
-        Strategy 3: Create a dataloader that samples from each dataset proportionally
-        based on the human_ratio parameter.
-        """
-        from yolox.data import (
-            DataLoader,
-            worker_init_reset_seed,
-        )
-        
-        # Create a custom sampler that handles proportional sampling
-        sampler = ProportionalSampler(
-            human_dataset_size=len(human_dataset),
-            object_dataset_size=len(object_dataset),
-            human_ratio=human_ratio,
-            seed=self.seed if self.seed else 0
-        )
-        
-        # Create a custom dataset that uses the sampler info to return data
-        proportional_dataset = ProportionalDataset(human_dataset, object_dataset)
-        
-        dataloader = DataLoader(
-            proportional_dataset,
-            batch_size=batch_size,
-            sampler=sampler,
-            num_workers=self.data_num_workers,
-            pin_memory=True,
-            worker_init_fn=worker_init_reset_seed,
-            drop_last=False,
-        )
-        
-        return {
-            "proportional": dataloader,
-            "strategy": "proportional"
-        }
-        
     def get_data_loader(self, batch_size, is_distributed, no_aug=False, cache_img=False):
         from yolox.data import (
             COCOKPTSDataset,
@@ -582,7 +452,6 @@ class Exp(BaseExp):
         
         # Configuration for training strategy
         self.train_strategy = "alternating"  # Options: "alternating", "combined", "proportional"
-        self.human_ratio = 0.5  # For proportional strategy - ratio of human samples
         
         local_rank = get_local_rank()
         with wait_for_the_master(local_rank):
@@ -595,23 +464,6 @@ class Exp(BaseExp):
                 return self._create_alternating_dataloader(
                     human_dataset, face_dataset, object_dataset, batch_size, is_distributed, no_aug
                 )
-            
-            # Strategy 2: Combined dataset (mix samples from both datasets)
-            elif self.train_strategy == "combined":
-                raise ValueError(f"Unsupported training strategy: {self.train_strategy}")
-                
-                # return self._create_combined_dataloader(
-                #     human_dataset, object_dataset, batch_size, is_distributed
-                # )
-            
-            # Strategy 3: Proportional sampling (control ratio between datasets)
-            elif self.train_strategy == "proportional":
-                raise ValueError(f"Unsupported training strategy: {self.train_strategy}")
-                
-                # return self._create_proportional_dataloader(
-                #     human_dataset, object_dataset, batch_size, is_distributed, self.human_ratio
-                # )
-            
             else:
                 raise ValueError(f"Unsupported training strategy: {self.train_strategy}")
             
@@ -622,3 +474,37 @@ class Exp(BaseExp):
     
     def get_evaluator(self, batch_size, is_distributed, testdev=False, legacy=False):
         pass
+
+
+
+if __name__ == "__main__":
+    # Play with load pretrained model for only the backbone
+    in_channels = [256, 512, 1024]
+    from yolox.models import YOLOPAFPN
+    depth = 0.33
+    width = 0.50
+    backbone = YOLOPAFPN(depth, width, in_channels=in_channels, conv_focus=True)
+    
+    
+    ckpt = torch.load("pretrained_models/yolox-s-ti-lite_39p1_57p9_checkpoint.pth", map_location="cpu")
+    state_dict = ckpt["model"]
+    new_state_dict = {}
+    # Get only the backbone state dict
+    # Because the checkpoint there is backbone.backbone . So will remove the first backbone.
+    for k, v in state_dict.items():
+        if "backbone" in k:
+            new_k = k[9:] # remove "backbone."
+            new_state_dict[new_k] = v
+    
+        
+    
+    # import ipdb; ipdb.set_trace();
+    
+    backbone.load_state_dict(new_state_dict)
+    
+    
+    
+    print("Done")
+    
+    
+    

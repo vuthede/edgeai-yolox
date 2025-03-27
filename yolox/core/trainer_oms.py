@@ -109,12 +109,15 @@ class Trainer:
             self.before_iter()
             self.train_one_iter()
             self.after_iter()
+           
+            ## Debug 
+            # if self.iter >= 40:
+            #     break
 
     def _update_metrics(self, info_dict, iter_start_time, prefix='face'):
         metrics = {
             f"{prefix}_iter_time": time.time() - iter_start_time,
             f"{prefix}_lr": self.optimizer.param_groups[0]["lr"],
-            # f"{prefix}_dataset_type": info_dict.get("dataset_type", "unknown"),
         }
 
 
@@ -145,13 +148,7 @@ class Trainer:
                 # Object batch
                 inps, targets, _ = self.prefetcher_object.next()
                 dataset_type = "object"
-                
-        # elif self.train_strategy in ["combined", "proportional"]:
-        #     # Get batch from the combined dataloader
-        #     batch = self.prefetcher.next()
-        #     inps = batch["images"]
-        #     targets = batch["targets"]
-        #     dataset_type = "mixed"
+   
         
         # Skip invalid batches
         if inps is None:
@@ -269,12 +266,21 @@ class Trainer:
         
         # Backward pass
         self.optimizer.zero_grad()
+        # Dododevu:
+        # if dataset_type == "face":
         loss.backward()
         self.optimizer.step()
         
         # Update EMA model if using
         if self.use_model_ema:
             self.ema_model.update(self.model)
+            
+            
+        lr = self.lr_scheduler.update_lr(self.progress_in_iter + 1)
+        # lr = 0.0001
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+
             
         # Track and log losses
         # self.meter.update(
@@ -342,6 +348,7 @@ class Trainer:
             self.prefetcher_face = DataPrefetcher(data_loaders["face"])
             self.prefetcher_object = DataPrefetcher(data_loaders["object"])
             self.max_iter = len(data_loaders["human"]) + len(data_loaders['face']) + len(data_loaders["object"])
+            print(f'###### Max iter: {self.max_iter}')
         else:
             # Single prefetcher for combined or proportional strategy
             dataloader = data_loaders.get("combined", data_loaders.get("proportional"))
@@ -429,14 +436,14 @@ class Trainer:
             # Get current iteration and learning rate
             current_iter = self.epoch * self.max_iter + self.iter + 1
             # lr = self.meter.get_meter("lr")
-            print(f'warninnnnn')
-            fkae_lr = 0
-            
+            # print(f'warninnnnn')
+            # fkae_lr = 0
+            lr = self.optimizer.param_groups[0]["lr"]
             # Log to console
             if self.rank == 0:
                 # Build metrics message based on available metrics
                 msg = "Epoch[{}], Iter[{}], lr:{:.6f}, ".format(
-                    self.epoch + 1, current_iter, fkae_lr
+                    self.epoch + 1, current_iter, lr
                 )
                 
                 # Add common metrics
@@ -445,38 +452,17 @@ class Trainer:
                 msg += "face_total_loss:{:.3f}, ".format(avg_metrics.get("face_total_loss", 0).avg)
                 msg += "object_total_loss:{:.3f}, ".format(avg_metrics.get("object_total_loss", 0).avg)
                 
-                
-                # msg += "total_loss:{:.3f}, ".format(avg_metrics.get("total_loss", 0))
-                # msg += "iou_loss:{:.3f}, ".format(avg_metrics.get("iou_loss", 0))
-                # msg += "conf_loss:{:.3f}, ".format(avg_metrics.get("conf_loss", 0))
-                # msg += "cls_loss:{:.3f}, ".format(avg_metrics.get("cls_loss", 0))
-                # msg += "l1_loss:{:.3f}, ".format(avg_metrics.get("l1_loss", 0))
-                
-                # # Add keypoint-specific metrics when available
-                # if "kpts_loss" in avg_metrics:
-                #     msg += "kpts_loss:{:.3f}, ".format(avg_metrics["kpts_loss"])
-                #     msg += "kpts_vis_loss:{:.3f}, ".format(avg_metrics["kpts_vis_loss"])
-                #     msg += "l1_loss_kpts:{:.3f}, ".format(avg_metrics["l1_loss_kpts"])
-                
-                # # Add dataset type when available
-                # if "dataset_type" in avg_metrics:
-                #     msg += "dataset:{}, ".format(avg_metrics["dataset_type"])
-                
-                # msg += "num_fg:{}, ".format(int(avg_metrics.get("num_fg", 0)))
-                # msg += "size:{}, ".format(self.exp.input_size)
-                # msg += "time:{:.4f}s".format(avg_metrics["iter_time"])
-                
                 logger.info(msg)
                 
                 # Log to TensorBoard if enabled
-                self.tblogger.add_scalar("train/human_total_loss", avg_metrics.get("human_total_loss", 0).avg, current_iter)
-                self.tblogger.add_scalar("train/face_total_loss", avg_metrics.get("face_total_loss", 0).avg, current_iter)
-                self.tblogger.add_scalar("train/object_total_loss", avg_metrics.get("object_total_loss", 0).avg, current_iter)
-                    # Log other metrics...
+                for loss_key in avg_metrics.keys():
+                    task_name = loss_key.split("_")[0] # human, object, face
+                    self.tblogger.add_scalar(f"train/{task_name}/{loss_key}", avg_metrics.get(loss_key, 0).avg, current_iter)
+                    
         
-        # Save and evaluate model at specified intervals
-        if (self.iter + 1) % self.exp.eval_interval == 0:
-            self.evaluate_and_save_model()
+        # # Save and evaluate model at specified intervals
+        # if (self.iter + 1) % self.exp.eval_interval == 0:
+        #     self.evaluate_and_save_model()
 
     @property
     def progress_in_iter(self):
@@ -516,7 +502,26 @@ class Trainer:
         return model
 
     def evaluate_and_save_model(self):
-        pass
+        # Tododevu
+        # Do evaluation here
+        
+        # Save model checkpoint
+        synchronize()
+        
+        self.save_ckpt(ckpt_name="latest")
 
     def save_ckpt(self, ckpt_name, update_best_ckpt=False):
-        pass
+        if self.rank == 0:
+            save_model = self.ema_model.ema if self.use_model_ema else self.model
+            logger.info("Save weights to {}".format(self.file_name))
+            ckpt_state = {
+                "start_epoch": self.epoch + 1,
+                "model": save_model.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+            }
+            save_checkpoint(
+                ckpt_state,
+                update_best_ckpt,
+                self.file_name,
+                ckpt_name,
+            )

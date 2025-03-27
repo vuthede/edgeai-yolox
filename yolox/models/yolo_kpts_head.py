@@ -333,6 +333,7 @@ class YOLOXHeadKPTS(nn.Module):
             # print(f'Yooooooo outputs shape:{outputs.shape}')
             
             if self.decode_in_inference:
+                print(f'In decode outputs............')
                 return self.decode_outputs(outputs, dtype=xin[0].type())
             else:
                 return outputs
@@ -598,7 +599,9 @@ class YOLOXHeadKPTS(nn.Module):
             loss_l1_kpts = 0
 
         reg_weight = 5.0
-        loss = reg_weight * loss_iou + loss_obj + loss_cls + loss_l1 + reg_weight * loss_kpts + loss_kpts_vis + loss_l1_kpts + loss_biometry
+        # Devutodo: Add biometry weight
+        biometry_weight = 0.0
+        loss = reg_weight * loss_iou + loss_obj + loss_cls + loss_l1 + reg_weight * loss_kpts + loss_kpts_vis + loss_l1_kpts + biometry_weight * loss_biometry
 
         return (
             loss,
